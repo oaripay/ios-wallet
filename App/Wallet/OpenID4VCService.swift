@@ -179,7 +179,10 @@ actor LiveOpenID4VCService: OpenID4VCOperating {
             let challenge = try await backend.beginPresentationRequired(
                 id: id,
                 allowUntrusted: allowUntrusted,
-                interactionTypes: ["urn:openid:dcp:ia:openid4vp_presentation"]
+                interactionTypes: [
+                    "urn:openid:dcp:ia:openid4vp_presentation",
+                    "urn:openid:dcp:ia:auth_via_web",
+                ]
             )
             switch challenge {
             case let .presentation(request): return .presentationRequired(request)
@@ -563,9 +566,15 @@ actor LiveOpenID4VCService: OpenID4VCOperating {
     }
 
     private func submitPIDPresentation(id: UUID, vpToken: String) async throws -> OpenID4VCInteractionCompletion {
-        _ = try await backend.submitPresentation(id: id, vpToken: vpToken)
-        authorizationRequired.remove(id)
-        return try await continueInteraction(id: id, allowUntrusted: true, transactionCode: nil)
+        switch try await backend.submitPresentation(id: id, vpToken: vpToken) {
+        case let .interaction(.web(challenge)):
+            return .webAuthorizationRequired(challenge)
+        case let .interaction(.presentation(request)):
+            return .presentationRequired(request)
+        case .authorizationCode:
+            authorizationRequired.remove(id)
+            return try await continueInteraction(id: id, allowUntrusted: true, transactionCode: nil)
+        }
     }
     func completeAuthorization(id: UUID, code: String) async throws -> OpenID4VCInteractionCompletion {
         try await backend.acceptAuthorizationCode(id: id, code: code)

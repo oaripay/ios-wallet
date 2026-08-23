@@ -73,6 +73,7 @@ final class WalletAppModel: ObservableObject {
     private var backgroundGeneration = 0
     private var activeAuthenticationID: UUID?
     private var deferredSchedulerTask: Task<Void, Never>?
+    private var webAuthorizationPollingTask: Task<Void, Never>?
     private(set) var autoReviewTask: Task<Void, Never>?
     private let userDefaults: UserDefaults
 
@@ -567,6 +568,8 @@ final class WalletAppModel: ObservableObject {
     }
 
     func reviewScannedRequest() async {
+        webAuthorizationPollingTask?.cancel()
+        webAuthorizationPollingTask = nil
         classifyScan()
         do {
             let route = try ProtocolInputClassifier(allowedHosts: allowedHosts).classify(scanInput)
@@ -690,6 +693,8 @@ final class WalletAppModel: ObservableObject {
         pendingOpenID4VCSignerTrustWarning = false
         activeOpenID4VCInteractionID = nil
         activeOpenID4VCInteraction = nil
+        webAuthorizationPollingTask?.cancel()
+        webAuthorizationPollingTask = nil
         if let id { await openID4VCWallet?.cancelInteraction(id: id) }
         eudiFlow = .completed("Wallet request cancelled. Nothing was shared or stored.")
     }
@@ -767,12 +772,36 @@ final class WalletAppModel: ObservableObject {
 
     private func finishWebAuthorization(code: String) async {
         pendingExternalURL = nil
+        webAuthorizationPollingTask = nil
         do {
             guard let id = activeOpenID4VCInteractionID, let openID4VCWallet else { throw CancellationError() }
             let result = try await openID4VCWallet.completeAuthorization(id: id, code: code)
-            if case .completed = result { finishCredentialRedemption() }
-            else { eudiFlow = .completed("Issuer authentication completed.") }
+            await handleOpenID4VCCompletion(result)
         } catch { eudiFlow = .failed(Self.safeMessage(error)) }
+    }
+
+    private func handleOpenID4VCCompletion(_ result: OpenID4VCInteractionCompletion) async {
+        switch result {
+        case .completed:
+            finishCredentialRedemption()
+        case .pending:
+            activeOpenID4VCInteractionID = nil
+            activeOpenID4VCInteraction = nil
+            await refreshDeferredIssuances()
+            selectedTab = .wallet
+            eudiFlow = .idle
+        case let .presentationRequired(challenge):
+            activeOpenID4VPPresentationRequest = challenge
+            eudiFlow = .openID4VPPresentationRequired(challenge)
+        case let .webAuthorizationRequired(challenge):
+            pendingExternalURL = challenge.authorizationURL
+            eudiFlow = .working("Waiting for issuer authentication…")
+            startWebAuthorizationPolling(id: challenge.id)
+        case let .credentialSignerTrustWarning(warning):
+            pendingOpenID4VCSignerTrustWarning = true
+            openID4VCTrustWarning = warning
+            eudiFlow = .idle
+        }
     }
 
     private func prepareOpenID4VCInteraction(allowUntrusted: Bool) {
@@ -795,55 +824,38 @@ final class WalletAppModel: ObservableObject {
             allowUntrusted: activeOpenID4VCAllowsUntrusted,
             transactionCode: openID4VCTransactionCode.isEmpty ? nil : openID4VCTransactionCode
         )
-        switch result {
-        case .completed:
-            activeOpenID4VCInteractionID = nil
-            activeOpenID4VCInteraction = nil
-            finishCredentialRedemption()
-        case .pending:
-            activeOpenID4VCInteractionID = nil
-            activeOpenID4VCInteraction = nil
-            await refreshDeferredIssuances()
-            selectedTab = .wallet
-            eudiFlow = .idle
-        case let .presentationRequired(challenge):
-            eudiFlow = .openID4VPPresentationRequired(challenge)
-        case let .webAuthorizationRequired(challenge):
-            pendingExternalURL = challenge.authorizationURL
-            eudiFlow = .working("Waiting for issuer authentication…")
-            startWebAuthorizationPolling(id: challenge.id)
-        case let .credentialSignerTrustWarning(warning):
-            pendingOpenID4VCSignerTrustWarning = true
-            openID4VCTrustWarning = warning
-            eudiFlow = .idle
-        }
+        await handleOpenID4VCCompletion(result)
     }
 
     private func startWebAuthorizationPolling(id: UUID) {
         guard let openID4VCWallet else { return }
-        Task { [weak self] in
+        webAuthorizationPollingTask?.cancel()
+        webAuthorizationPollingTask = Task { [weak self] in
             let deadline = Date().addingTimeInterval(5 * 60)
             do {
                 while !Task.isCancelled && Date() < deadline {
-                    try await Task.sleep(for: .seconds(2))
                     switch try await openID4VCWallet.pollWebAuthorization(id: id) {
                     case .pending:
+                        try await Task.sleep(for: .seconds(2))
                         continue
                     case let .authorizationCode(code):
                         await self?.finishWebAuthorization(code: code)
                         return
                     case let .failed(error):
                         self?.eudiFlow = .failed("Issuer authentication failed: \(error)")
+                        self?.webAuthorizationPollingTask = nil
                         return
                     }
                 }
                 if !Task.isCancelled {
                     self?.eudiFlow = .failed("Issuer authentication timed out. Start the credential offer again.")
+                    self?.webAuthorizationPollingTask = nil
                 }
             } catch is CancellationError {
                 return
             } catch {
                 self?.eudiFlow = .failed(Self.safeMessage(error))
+                self?.webAuthorizationPollingTask = nil
             }
         }
     }
@@ -928,27 +940,8 @@ final class WalletAppModel: ObservableObject {
                 )
                 activeIssuerAuthorizationPresentation = false
                 if accepted { try await refreshWalletState() }
-                switch result {
-                case .completed:
-                    activeOpenID4VCInteractionID = nil
-                    activeOpenID4VCInteraction = nil
-                    activeOpenID4VPPresentationRequest = nil
-                    finishCredentialRedemption()
-                case let .pending(message):
-                    activeOpenID4VCInteractionID = nil
-                    activeOpenID4VCInteraction = nil
-                    activeOpenID4VPPresentationRequest = nil
-                    eudiFlow = .completed(message)
-                case .presentationRequired:
-                    activeOpenID4VCInteractionID = nil
-                    activeOpenID4VCInteraction = nil
-                    activeOpenID4VPPresentationRequest = nil
-                    eudiFlow = .failed("The issuer requested another unsupported presentation step.")
-                case let .credentialSignerTrustWarning(warning):
-                    pendingOpenID4VCSignerTrustWarning = true
-                    openID4VCTrustWarning = warning
-                    eudiFlow = .idle
-                }
+                activeOpenID4VPPresentationRequest = nil
+                await handleOpenID4VCCompletion(result)
                 return
             }
             guard isEudiOperational, let eudiWallet else {
@@ -1103,6 +1096,9 @@ final class WalletAppModel: ObservableObject {
     }
 
     private func finishCredentialRedemption() {
+        webAuthorizationPollingTask?.cancel()
+        webAuthorizationPollingTask = nil
+        pendingExternalURL = nil
         scanInput = ""
         scanResult = .idle
         selectedTab = .wallet

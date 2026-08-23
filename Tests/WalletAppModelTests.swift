@@ -971,7 +971,7 @@ struct WalletAppModelTests {
         let interactionID = UUID()
         let challenge = OpenID4VPPresentationRequest(
             id: interactionID,
-            authorizationEndpoint: URL(string: "https://wallet.dev.oari.io/openid/authorize")!,
+            authorizationChallengeEndpoint: URL(string: "https://wallet.dev.oari.io/openid/authorize")!,
             authSession: "auth-session",
             interactionType: "openid4vp_presentation",
             responseMode: "direct_post",
@@ -1029,7 +1029,7 @@ struct WalletAppModelTests {
         let interactionID = UUID()
         let challenge = OpenID4VPPresentationRequest(
             id: interactionID,
-            authorizationEndpoint: URL(string: "https://wallet.dev.oari.io/openid/authorize")!,
+            authorizationChallengeEndpoint: URL(string: "https://wallet.dev.oari.io/openid/authorize")!,
             authSession: "auth-session",
             interactionType: "openid4vp_presentation",
             responseMode: "direct_post",
@@ -1065,6 +1065,57 @@ struct WalletAppModelTests {
         await model.submitPresentation(accepted: true)
         #expect(await openID4VC.completedPIDClaimIDs == [Set(["required-pid"])])
         #expect(model.eudiFlow == .idle)
+    }
+
+    @Test("PID completion routes a follow-up web interaction and starts polling")
+    func openID4VCPIDPresentationContinuesInBrowser() async {
+        await confirmation("Web authorization was polled") { polled in
+            let interactionID = UUID()
+            let presentation = OpenID4VPPresentationRequest(
+                id: interactionID,
+                authorizationChallengeEndpoint: URL(string: "https://issuer.example/authorize-challenge")!,
+                authSession: "vp-session",
+                interactionType: "urn:openid:dcp:ia:openid4vp_presentation",
+                responseMode: "ia_post",
+                responseURI: URL(string: "https://issuer.example/authorize-challenge")!,
+                nonce: "nonce",
+                state: "state",
+                dcqlQuery: ["credentials": .array([.object([
+                    "id": .string("pid"),
+                    "format": .string("dc+sd-jwt"),
+                ])])],
+                signedRequest: nil
+            )
+            let web = WebAuthorizationChallenge(
+                id: interactionID,
+                authSession: "web-session",
+                authorizationURL: URL(string: "https://login.example/session")!,
+                authorizationChallengeEndpoint: URL(string: "https://issuer.example/authorize-challenge")!
+            )
+            let openID4VC = FixtureOpenID4VCWallet(
+                outcome: .allow,
+                interactionID: interactionID,
+                continuation: .presentationRequired(presentation),
+                pidPresentationRequest: fixturePresentationRequest(),
+                pidCompletion: .webAuthorizationRequired(web),
+                onWebAuthorizationPoll: { polled() }
+            )
+            let model = WalletAppModel()
+            await model.load(.success(WalletAppDependencies(
+                credentials: EmptyMetadataRepository(), audit: EmptyAuditRepository(),
+                localAuthenticator: FixtureAuthenticator(), eudiWallet: FixtureEudiWallet(),
+                eudiAvailability: .available, openID4VCWallet: openID4VC
+            )))
+            model.scanInput = "openid-credential-offer://?credential_offer=fixture"
+            await model.reviewScannedRequest()
+            await model.issueReviewedOpenID4VCCredential()
+            await model.startEudiCredentialPresentation(presentation)
+            await model.submitPresentation(accepted: true)
+            await openID4VC.waitForWebAuthorizationPoll()
+
+            #expect(model.pendingExternalURL == web.authorizationURL)
+            await model.cancelOpenID4VCTrustWarning()
+        }
     }
 
     @Test("Deferred credential retry forwards issuer and document and reports outcome")
@@ -1145,6 +1196,8 @@ private actor FixtureOpenID4VCWallet: OpenID4VCOperating {
     private(set) var cancelCount = 0
     let continuationDelayNanoseconds: UInt64
     let continuation: OpenID4VCInteractionCompletion
+    let pidCompletion: OpenID4VCInteractionCompletion
+    let onWebAuthorizationPoll: (@Sendable () -> Void)?
     private(set) var completedAuthorizationCodes: [String] = []
     private(set) var completedPIDClaimIDs: [Set<String>] = []
     private(set) var completedStandaloneClaimIDs: [Set<String>] = []
@@ -1153,6 +1206,8 @@ private actor FixtureOpenID4VCWallet: OpenID4VCOperating {
     private(set) var presentationBeginCount = 0
     private(set) var deferredResumeCount = 0
     private(set) var deferredCheckCount = 0
+    private var didPollWebAuthorization = false
+    private var webAuthorizationPollWaiters: [CheckedContinuation<Void, Never>] = []
     private var deferred: [DeferredIssuance]
     let pidPresentationRequest: EudiPresentationRequest?
     let standalonePresentationRequest: EudiPresentationRequest?
@@ -1163,7 +1218,9 @@ private actor FixtureOpenID4VCWallet: OpenID4VCOperating {
         continuation: OpenID4VCInteractionCompletion = .completed("EBSI development flow completed."),
         pidPresentationRequest: EudiPresentationRequest? = nil,
         standalonePresentationRequest: EudiPresentationRequest? = nil,
-        deferred: [DeferredIssuance] = []
+        deferred: [DeferredIssuance] = [],
+        pidCompletion: OpenID4VCInteractionCompletion = .completed("W3C PID submitted"),
+        onWebAuthorizationPoll: (@Sendable () -> Void)? = nil
     ) {
         self.outcome = outcome
         self.interactionID = interactionID
@@ -1172,6 +1229,8 @@ private actor FixtureOpenID4VCWallet: OpenID4VCOperating {
         self.pidPresentationRequest = pidPresentationRequest
         self.standalonePresentationRequest = standalonePresentationRequest
         self.deferred = deferred
+        self.pidCompletion = pidCompletion
+        self.onWebAuthorizationPoll = onWebAuthorizationPoll
     }
     func resolveInteraction(uri: String) async throws -> OpenID4VCResolvedInteraction {
         resolveCount += 1
@@ -1234,11 +1293,25 @@ private actor FixtureOpenID4VCWallet: OpenID4VCOperating {
         userAccepted: Bool
     ) async throws -> OpenID4VCInteractionCompletion {
         completedPIDClaimIDs.append(selectedClaimIDs)
-        return .completed(userAccepted ? "W3C PID submitted" : "PID request declined")
+        return userAccepted ? pidCompletion : .completed("PID request declined")
     }
     func completeAuthorization(id: UUID, code: String) async throws -> OpenID4VCInteractionCompletion {
         completedAuthorizationCodes.append(code)
         return .completed("Authorization completed")
+    }
+    func pollWebAuthorization(id: UUID) async throws -> WebAuthorizationPollResult {
+        didPollWebAuthorization = true
+        let waiters = webAuthorizationPollWaiters
+        webAuthorizationPollWaiters.removeAll()
+        waiters.forEach { $0.resume() }
+        onWebAuthorizationPoll?()
+        return .pending
+    }
+    func waitForWebAuthorizationPoll() async {
+        if didPollWebAuthorization { return }
+        await withCheckedContinuation { continuation in
+            webAuthorizationPollWaiters.append(continuation)
+        }
     }
     func deleteCredential(
         backendID: UUID,

@@ -850,10 +850,14 @@ struct OpenID4VCW3CBackendTests {
         let encoded = json.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed)!
         let offer = try await backend.resolveOffer("openid-credential-offer://?credential_offer=\(encoded)")
         #expect(offer.authorizationRequired)
-        let challenge = try await backend.beginPresentationRequired(
+        let interaction = try await backend.beginPresentationRequired(
             id: offer.id,
             allowUntrusted: false
         )
+        guard case let .presentation(challenge) = interaction else {
+            Issue.record("Expected presentation interaction")
+            return
+        }
         #expect(challenge.responseMode == "ia_post")
         #expect(challenge.dcqlQuery["credentials"] != nil)
         let initial = try #require((await transport.requests).first { request in
@@ -864,7 +868,7 @@ struct OpenID4VCW3CBackendTests {
         let initialFields = Dictionary(uniqueKeysWithValues: try #require(
             URLComponents(string: "?\(initialBody)")?.queryItems
         ).compactMap { item in item.value.map { (item.name, $0) } })
-        #expect(initialFields["interaction_types_supported"] == "urn:openid:dcp:ia:openid4vp_presentation")
+        #expect(initialFields["interaction_types_supported"] == "urn:openid:dcp:ia:openid4vp_presentation,urn:openid:dcp:ia:auth_via_web")
         #expect(initialFields["client_id"] == "oari-development-wallet")
         #expect(initialFields["redirect_uri"] == "https://oari.io/oauth/callback")
         #expect(initialFields["state"] == nil)
@@ -872,7 +876,7 @@ struct OpenID4VCW3CBackendTests {
         #expect(try await backend.submitPresentation(
             id: offer.id,
             vpToken: #"{"pid":["valid.pid.vp"]}"#
-        ) == "auth-code")
+        ) == .authorizationCode("auth-code"))
         let post = try #require((await transport.requests).last { request in
             request.url.path == "/authorize-challenge" &&
                 String(decoding: request.body ?? Data(), as: UTF8.self).contains("openid4vp_response=")
@@ -891,6 +895,41 @@ struct OpenID4VCW3CBackendTests {
         #expect(fields["openid4vp_presentation"] == nil)
         #expect(Set(fields.keys) == ["auth_session", "openid4vp_response"])
         #expect(try await backend.issue(id: offer.id, allowUntrusted: false, transactionCode: nil).count == 1)
+    }
+
+    @Test("Interactive authorization continues from VP through web pending to code")
+    func authorizationPresentationThenWeb() async throws {
+        let transport = VPThenWebTransport()
+        let backend = OpenID4VCW3CBackend(
+            transport: transport,
+            trustEvaluator: TrustedIssuerEvaluator(),
+            keyProvider: FixtureKeyProvider(),
+            credentialStore: FixtureCredentialStore(),
+            credentialValidator: FixtureCredentialValidator(),
+            profile: try .vcdm2JWTVC()
+        )
+        let offer = try await Self.authorizationOffer(backend)
+        let initial = try await backend.beginPresentationRequired(id: offer.id, allowUntrusted: false)
+        guard case .presentation = initial else {
+            Issue.record("Expected presentation interaction")
+            return
+        }
+
+        let submitted = try await backend.submitPresentation(
+            id: offer.id, vpToken: #"{"pid":["valid.pid.vp"]}"#
+        )
+        guard case let .interaction(.web(web)) = submitted else {
+            Issue.record("Expected web interaction")
+            return
+        }
+        #expect(web.authorizationURL == URL(string: "https://login.example/session"))
+        #expect(web.authorizationChallengeEndpoint == URL(string: "https://issuer.example/authorize-challenge"))
+        #expect(try await backend.pollWebAuthorization(id: offer.id) == .pending)
+        #expect(try await backend.pollWebAuthorization(id: offer.id) == .authorizationCode("web-code"))
+        try await backend.acceptAuthorizationCode(id: offer.id, code: "web-code")
+
+        let polls = await transport.pollBodies
+        #expect(polls == ["auth_session=web-session-1", "auth_session=web-session-2"])
     }
 
     @Test("Interactive authorization rejects a mismatched response state")
@@ -955,11 +994,15 @@ struct OpenID4VCW3CBackendTests {
         let json = #"{"credential_issuer":"https://issuer.example","credential_configuration_ids":["example-vcdm2-jwt-vc"],"grants":{"authorization_code":{"issuer_state":"issuer-state"}}}"#
         let encoded = json.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed)!
         let offer = try await backend.resolveOffer("openid-credential-offer://?credential_offer=\(encoded)")
-        let challenge = try await backend.beginPresentationRequired(
+        let interaction = try await backend.beginPresentationRequired(
             id: offer.id,
             allowUntrusted: false,
             interactionTypes: ["openid4vp_presentation"]
         )
+        guard case let .presentation(challenge) = interaction else {
+            Issue.record("Expected presentation interaction")
+            return
+        }
         #expect(challenge.responseMode == "direct_post")
         #expect(challenge.responseURI == URL(string: "https://issuer.example/authorize"))
         #expect(challenge.signedRequest != nil)
@@ -1026,12 +1069,16 @@ struct OpenID4VCW3CBackendTests {
         let json = #"{"credential_issuer":"https://issuer.example/service/draft-13","credential_configuration_ids":["pid"],"grants":{"authorization_code":{"issuer_state":"issuer-state"}}}"#
         let encoded = json.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed)!
         let offer = try await backend.resolveOffer("openid-credential-offer://?credential_offer=\(encoded)")
-        let challenge = try await backend.beginPresentationRequired(
+        let interaction = try await backend.beginPresentationRequired(
             id: offer.id,
             allowUntrusted: false,
             interactionTypes: ["openid4vp_presentation"]
         )
-        #expect(challenge.authorizationEndpoint.path == "/service/draft-13/authorize")
+        guard case let .presentation(challenge) = interaction else {
+            Issue.record("Expected presentation interaction")
+            return
+        }
+        #expect(challenge.authorizationChallengeEndpoint.path == "/service/draft-13/authorize")
         #expect(challenge.responseMode == "iar-post")
         let requests = await transport.requests
         let authorization = try #require(requests.first { $0.url.path == "/service/draft-13/authorize" })
@@ -1881,6 +1928,35 @@ private actor DraftIARFallbackTransport: OpenID4VCHTTPTransport {
             .replacingOccurrences(of: "+", with: "-")
             .replacingOccurrences(of: "/", with: "_")
             .replacingOccurrences(of: "=", with: "")
+    }
+}
+
+private actor VPThenWebTransport: OpenID4VCHTTPTransport {
+    private(set) var pollBodies: [String] = []
+
+    func send(url: URL, method: String, headers: [String: String], body: Data?) async throws -> OpenID4VCHTTPResponse {
+        let form = String(decoding: body ?? Data(), as: UTF8.self)
+        switch url.path {
+        case "/.well-known/openid-credential-issuer":
+            return .init(statusCode: 200, body: Data(#"{"credential_endpoint":"https://issuer.example/credential","authorization_servers":["https://issuer.example"],"credential_configurations_supported":{"example-vcdm2-jwt-vc":{"format":"application/vc+jwt"}}}"#.utf8))
+        case "/.well-known/oauth-authorization-server":
+            return .init(statusCode: 200, body: Data(#"{"authorization_endpoint":"https://issuer.example/browser-authorize","authorization_challenge_endpoint":"https://issuer.example/authorize-challenge","token_endpoint":"https://issuer.example/token"}"#.utf8))
+        case "/authorize-challenge" where form.contains("issuer_state="):
+            let query = #"{"id":"pid","format":"dc+sd-jwt","meta":{"vct_values":["urn:example:pid"]},"claims":[{"path":["given_name"]}]}"#
+            return .init(statusCode: 403, body: Data("""
+            {"error":"insufficient_authorization","interaction_type_required":"urn:openid:dcp:ia:openid4vp_presentation","auth_session":"vp-session","openid4vp_request":{"response_type":"vp_token","response_mode":"ia_post","nonce":"nonce","state":"state","dcql_query":{"credentials":[\(query)]}}}
+            """.utf8))
+        case "/authorize-challenge" where form.contains("openid4vp_response="):
+            return .init(statusCode: 403, body: Data(#"{"error":"insufficient_authorization","interaction_type_required":"urn:openid:dcp:ia:auth_via_web","auth_session":"web-session-1","authorization_url":"https://login.example/session"}"#.utf8))
+        case "/authorize-challenge":
+            pollBodies.append(form)
+            if pollBodies.count == 1 {
+                return .init(statusCode: 400, body: Data(#"{"error":"authorization_pending","auth_session":"web-session-2"}"#.utf8))
+            }
+            return .init(statusCode: 200, body: Data(#"{"authorization_code":"web-code"}"#.utf8))
+        default:
+            return .init(statusCode: 404, body: Data())
+        }
     }
 }
 
