@@ -164,10 +164,25 @@ public struct CredentialConfigurationClaim: Codable, Equatable, Sendable, Identi
     private enum CodingKeys: String, CodingKey { case path, name, description }
 }
 
+public struct WebAuthorizationChallenge: Equatable, Identifiable, Sendable {
+    public let id: UUID
+    public let authSession: String
+    public let authorizationURL: URL
+    public init(id: UUID, authSession: String, authorizationURL: URL) {
+        self.id = id; self.authSession = authSession; self.authorizationURL = authorizationURL
+    }
+}
+
+public enum PresentationAuthorizationChallenge: Equatable, Sendable {
+    case presentation(OpenID4VPPresentationRequest)
+    case web(WebAuthorizationChallenge)
+}
+
 public struct OpenID4VPPresentationRequest: Equatable, Identifiable, Sendable {
     public let id: UUID
     public let authorizationEndpoint: URL
     public let authSession: String?
+    /// Browser URL for issuer authentication, when the issuer advertises auth_via_web.
     public let interactionType: String
     public let responseMode: String
     public let responseURI: URL?
@@ -206,6 +221,12 @@ public struct OpenID4VPPresentationRequest: Equatable, Identifiable, Sendable {
         self.clientID = clientID
         self.transactionData = transactionData
     }
+}
+
+public enum WebAuthorizationPollResult: Equatable, Sendable {
+    case pending
+    case authorizationCode(String)
+    case failed(String)
 }
 
 public struct DCQLRequestedClaim: Equatable, Identifiable, Sendable {
@@ -593,7 +614,7 @@ public actor OpenID4VCW3CBackend {
         interactionTypes: [String] = [
             "urn:openid:dcp:ia:openid4vp_presentation",
         ]
-    ) async throws -> OpenID4VPPresentationRequest {
+    ) async throws -> PresentationAuthorizationChallenge {
         if let context = interactiveAuthorizationContexts[id] {
             guard context.expiresAt > now() else {
                 interactiveAuthorizationContexts[id] = nil
@@ -762,6 +783,10 @@ public actor OpenID4VCW3CBackend {
             from: data,
             stage: "presentation challenge"
         )
+        if let session = response.authSession,
+           let authorizationURL = response.authorizationURL.flatMap(URL.init(string)) {
+            return .web(WebAuthorizationChallenge(id: id, authSession: session, authorizationURL: authorizationURL))
+        }
         let expectedInteractionType = usesDraftInteraction
             ? "openid4vp_presentation"
             : "urn:openid:dcp:ia:openid4vp_presentation"
@@ -858,7 +883,7 @@ public actor OpenID4VCW3CBackend {
             clientID: signedClaims?.clientID ?? request.clientID ?? request.requestObject?.clientID,
             transactionData: signedClaims?.transactionData ?? []
         )
-        return challenge
+        return .presentation(challenge)
     }
 
     public func prepareStoredPIDPresentation(id: UUID) async throws -> DCQLCredentialPresentationRequest {
@@ -936,6 +961,24 @@ public actor OpenID4VCW3CBackend {
             )
         }
         throw OpenID4VCBackendError.presentationCredentialUnavailable
+    }
+
+    public func pollWebAuthorization(id: UUID) async throws -> WebAuthorizationPollResult {
+        guard let context = interactiveAuthorizationContexts[id],
+              let session = context.challenge.authSession else {
+            throw OpenID4VCBackendError.unknownTransaction
+        }
+        let response = try await transport.send(
+            url: context.challenge.authorizationEndpoint,
+            method: "POST",
+            headers: ["Content-Type": "application/x-www-form-urlencoded", "Accept": "application/json"],
+            body: form(["auth_session": session])
+        )
+        guard response.statusCode == 200 else { throw OpenID4VCBackendError.authorizationFailed }
+        let object = try JSONSerialization.jsonObject(with: response.body) as? [String: Any] ?? [:]
+        if let code = object["authorization_code"] as? String, !code.isEmpty { return .authorizationCode(code) }
+        if let error = object["error"] as? String { return .failed(error) }
+        return .pending
     }
 
     public func beginStoredOpenID4VPPresentation(uri: String) async throws -> DCQLCredentialPresentationRequest {
@@ -3009,11 +3052,13 @@ private struct AuthorizationCodeGrant: Decodable {
 
 private struct PresentationChallengeResponse: Decodable {
     let authSession: String?
+    let authorizationURL: String?
     let interactionTypeRequired: String?
     let type: String?
     let openid4vpRequest: PresentationRequest?
     enum CodingKeys: String, CodingKey {
         case authSession = "auth_session"
+        case authorizationURL = "authorization_url"
         case interactionTypeRequired = "interaction_type_required"
         case type
         case openid4vpRequest = "openid4vp_request"

@@ -765,6 +765,16 @@ final class WalletAppModel: ObservableObject {
         }
     }
 
+    private func finishWebAuthorization(code: String) async {
+        pendingExternalURL = nil
+        do {
+            guard let id = activeOpenID4VCInteractionID, let openID4VCWallet else { throw CancellationError() }
+            let result = try await openID4VCWallet.completeAuthorization(id: id, code: code)
+            if case .completed = result { finishCredentialRedemption() }
+            else { eudiFlow = .completed("Issuer authentication completed.") }
+        } catch { eudiFlow = .failed(Self.safeMessage(error)) }
+    }
+
     private func prepareOpenID4VCInteraction(allowUntrusted: Bool) {
         guard let interaction = activeOpenID4VCInteraction else {
             eudiFlow = .failed("The credential transaction expired before consent.")
@@ -798,10 +808,43 @@ final class WalletAppModel: ObservableObject {
             eudiFlow = .idle
         case let .presentationRequired(challenge):
             eudiFlow = .openID4VPPresentationRequired(challenge)
+        case let .webAuthorizationRequired(challenge):
+            pendingExternalURL = challenge.authorizationURL
+            eudiFlow = .working("Waiting for issuer authentication…")
+            startWebAuthorizationPolling(id: challenge.id)
         case let .credentialSignerTrustWarning(warning):
             pendingOpenID4VCSignerTrustWarning = true
             openID4VCTrustWarning = warning
             eudiFlow = .idle
+        }
+    }
+
+    private func startWebAuthorizationPolling(id: UUID) {
+        guard let openID4VCWallet else { return }
+        Task { [weak self] in
+            let deadline = Date().addingTimeInterval(5 * 60)
+            do {
+                while !Task.isCancelled && Date() < deadline {
+                    try await Task.sleep(for: .seconds(2))
+                    switch try await openID4VCWallet.pollWebAuthorization(id: id) {
+                    case .pending:
+                        continue
+                    case let .authorizationCode(code):
+                        await self?.finishWebAuthorization(code: code)
+                        return
+                    case let .failed(error):
+                        self?.eudiFlow = .failed("Issuer authentication failed: \(error)")
+                        return
+                    }
+                }
+                if !Task.isCancelled {
+                    self?.eudiFlow = .failed("Issuer authentication timed out. Start the credential offer again.")
+                }
+            } catch is CancellationError {
+                return
+            } catch {
+                self?.eudiFlow = .failed(Self.safeMessage(error))
+            }
         }
     }
 

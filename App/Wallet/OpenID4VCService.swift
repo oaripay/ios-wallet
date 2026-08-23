@@ -28,6 +28,7 @@ enum OpenID4VCInteractionCompletion: Equatable, Sendable {
     case completed(String)
     case pending(String)
     case presentationRequired(OpenID4VPPresentationRequest)
+    case webAuthorizationRequired(WebAuthorizationChallenge)
     case credentialSignerTrustWarning(EbsiTrustWarning)
 }
 
@@ -56,6 +57,7 @@ protocol OpenID4VCOperating: Sendable {
         userAccepted: Bool
     ) async throws -> OpenID4VCInteractionCompletion
     func completeAuthorization(id: UUID, code: String) async throws -> OpenID4VCInteractionCompletion
+    func pollWebAuthorization(id: UUID) async throws -> WebAuthorizationPollResult
     func deleteCredential(
         backendID: UUID,
         metadataID: CredentialID,
@@ -174,11 +176,15 @@ actor LiveOpenID4VCService: OpenID4VCOperating {
         transactionCode: String?
     ) async throws -> OpenID4VCInteractionCompletion {
         if authorizationRequired.contains(id) {
-            return .presentationRequired(try await backend.beginPresentationRequired(
+            let challenge = try await backend.beginPresentationRequired(
                 id: id,
                 allowUntrusted: allowUntrusted,
                 interactionTypes: ["urn:openid:dcp:ia:openid4vp_presentation"]
-            ))
+            )
+            switch challenge {
+            case let .presentation(request): return .presentationRequired(request)
+            case let .web(challenge): return .webAuthorizationRequired(challenge)
+            }
         }
         let outcome: W3CCredentialIssuanceOutcome
         do {
@@ -565,6 +571,10 @@ actor LiveOpenID4VCService: OpenID4VCOperating {
         try await backend.acceptAuthorizationCode(id: id, code: code)
         authorizationRequired.remove(id)
         return try await continueInteraction(id: id, allowUntrusted: true, transactionCode: nil)
+    }
+
+    func pollWebAuthorization(id: UUID) async throws -> WebAuthorizationPollResult {
+        try await backend.pollWebAuthorization(id: id)
     }
 
     func deleteCredential(
