@@ -13,6 +13,7 @@ public struct EbsiTrustWarning: Equatable, Identifiable, Sendable {
     public let reasons: [TrustReason]
     public let evidenceSources: [String]
     public let nextAction: String
+    public let diagnostic: String
 
     public enum Role: String, Codable, Equatable, Sendable {
         case issuer
@@ -25,7 +26,8 @@ public struct EbsiTrustWarning: Equatable, Identifiable, Sendable {
         role: Role,
         reasons: [TrustReason],
         evidenceSources: [String],
-        nextAction: String
+        nextAction: String,
+        diagnostic: String = ""
     ) {
         self.id = id
         self.counterpartyIdentifier = counterpartyIdentifier
@@ -33,6 +35,7 @@ public struct EbsiTrustWarning: Equatable, Identifiable, Sendable {
         self.reasons = reasons
         self.evidenceSources = evidenceSources
         self.nextAction = nextAction
+        self.diagnostic = diagnostic
     }
 }
 

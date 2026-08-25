@@ -2258,7 +2258,8 @@ public actor OpenID4VCW3CBackend {
                     role: .issuer,
                     reasons: reasons,
                     evidenceSources: evidence.map(\.sourceIdentifier).sorted(),
-                    nextAction: "Continue to store the validated credential, or Cancel. No credential has been stored and no credential request will be repeated."
+                    nextAction: "Continue to store the validated credential, or Cancel. No credential has been stored and no credential request will be repeated.",
+                    diagnostic: "Issuer trust evaluation returned: \(reasons.map(\.rawValue).joined(separator: ", "))."
                 )
             }
         }

@@ -24,6 +24,9 @@ struct TrustWarningView: View {
                     detail("Counterparty", warning.counterpartyIdentifier)
                     detail("Evidence", warning.evidenceSources.isEmpty ? "No registry evidence" : warning.evidenceSources.joined(separator: ", "))
                     detail("Reasons", warning.reasons.map(\.rawValue).joined(separator: ", "))
+                    if !warning.diagnostic.isEmpty {
+                        detail("Diagnostic", warning.diagnostic)
+                    }
                 }
             }
             Label(warning.nextAction, systemImage: "info.circle")
