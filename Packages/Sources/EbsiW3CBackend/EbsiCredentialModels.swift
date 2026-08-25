@@ -184,6 +184,11 @@ public struct EbsiCredentialInspector: Sendable {
             try Self.validateVCDM2Credential(payload, context: profile.context, at: validationDate)
         }
         let credential = payload["vc"]?.object ?? payload
+        if profile.dataModel == .v1_1 {
+            try Self.validateVCDM11Credential(
+                credential, payload: payload, context: profile.context, at: validationDate
+            )
+        }
         guard credential["@context"]?.contains(string: profile.context) == true,
               credential["type"]?.contains(string: "VerifiableCredential") == true else {
             throw EbsiCredentialError.profileMismatch
@@ -201,6 +206,55 @@ public struct EbsiCredentialInspector: Sendable {
             throw EbsiCredentialError.profileMismatch
         }
         return credential
+    }
+
+    private static func validateVCDM11Credential(
+        _ credential: [String: AnySendableJSON],
+        payload: [String: AnySendableJSON],
+        context expectedContext: String,
+        at validationDate: Date?
+    ) throws {
+        guard case let .array(contexts)? = credential["@context"],
+              contexts.first?.string == expectedContext,
+              contexts.allSatisfy({ $0.string != nil || $0.object != nil }),
+              hasVCDM2Type(credential["type"]),
+              let issuer = issuerIdentifier(credential["issuer"]),
+              isURI(issuer),
+              let subjects = credentialSubjects(credential["credentialSubject"]) else {
+            throw EbsiCredentialError.profileMismatch
+        }
+
+        // VCDM 1.1 uses issuanceDate/expirationDate, unlike VCDM 2.0.
+        guard let issuanceDate = try dateTimeProperty("issuanceDate", in: credential) else {
+            throw EbsiCredentialError.profileMismatch
+        }
+        let expirationDate = try dateTimeProperty("expirationDate", in: credential)
+        if let expirationDate, issuanceDate >= expirationDate {
+            throw EbsiCredentialError.profileMismatch
+        }
+        if let validationDate {
+            if validationDate < issuanceDate { throw EbsiCredentialError.profileMismatch }
+            if let expirationDate, validationDate >= expirationDate {
+                throw EbsiCredentialError.profileMismatch
+            }
+        }
+
+        if let tokenIssuer = payload["iss"] {
+            guard tokenIssuer.string == issuer else { throw EbsiCredentialError.profileMismatch }
+        }
+        if let subject = payload["sub"] {
+            guard let subject = subject.string,
+                  subjects.compactMap({ $0["id"]?.string }).contains(subject) else {
+                throw EbsiCredentialError.profileMismatch
+            }
+        }
+        if let tokenID = payload["jti"] {
+            guard let tokenID = tokenID.string, credential["id"]?.string == tokenID else {
+                throw EbsiCredentialError.profileMismatch
+            }
+        }
+        try validateNumericDateClaim("nbf", value: payload["nbf"], matches: issuanceDate)
+        try validateNumericDateClaim("exp", value: payload["exp"], matches: expirationDate)
     }
 
     private static func validateVCDM2Credential(

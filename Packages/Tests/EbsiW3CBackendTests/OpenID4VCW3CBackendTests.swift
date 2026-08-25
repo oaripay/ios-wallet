@@ -686,6 +686,7 @@ struct OpenID4VCW3CBackendTests {
                 "@context": ["https://www.w3.org/2018/credentials/v1"],
                 "type": ["VerifiableCredential", "ExampleCredential"],
                 "issuer": "did:key:issuer",
+                "issuanceDate": "2026-01-01T00:00:00Z",
                 "credentialSubject": ["id": "did:key:holder"],
             ],
         ])
