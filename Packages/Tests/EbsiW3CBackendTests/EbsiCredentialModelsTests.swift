@@ -141,6 +141,23 @@ struct EbsiCredentialModelsTests {
         }
     }
 
+    @Test("VCDM2 permits equal validity bounds")
+    func vcdm2EqualValidityBounds() throws {
+        let timestamp = "2027-01-15T08:00:00Z"
+        let token = try compactJWT(
+            header: ["alg": "ES256", "typ": "vc+jwt"],
+            payload: [
+                "@context": ["https://www.w3.org/ns/credentials/v2"],
+                "type": ["VerifiableCredential"],
+                "issuer": "https://issuer.example",
+                "credentialSubject": ["name": "Ada"],
+                "validFrom": timestamp,
+                "validUntil": timestamp,
+            ]
+        )
+        _ = try EbsiCredentialInspector().inspectCompactJWT(token, profile: .vcdm2JWTVC())
+    }
+
     @Test("VCDM2 requires vc+jwt typ while VCDM 1.1 keeps nested legacy behavior")
     func joseTypeAndLegacyVCDM11() throws {
         let v2Payload: [String: Any] = [
@@ -155,12 +172,17 @@ struct EbsiCredentialModelsTests {
         }
 
         let legacy = try compactJWT(header: ["alg": "ES256", "typ": "JWT"], payload: [
+            "iss": "did:example:issuer",
+            "nbf": 1_700_000_000,
+            "sub": "did:example:holder",
             "vc": [
-                "@context": "https://www.w3.org/2018/credentials/v1",
-                "type": "VerifiableCredential",
+                "@context": ["https://www.w3.org/2018/credentials/v1"],
+                "type": ["VerifiableCredential", "ExampleCredential"],
             ],
         ])
-        _ = try EbsiCredentialInspector().inspectCompactJWT(legacy, profile: .vcdm11Jwt())
+        let inspected = try EbsiCredentialInspector().inspectCompactJWT(legacy, profile: .vcdm11Jwt())
+        #expect(inspected["issuer"] == .string("did:example:issuer"))
+        #expect(inspected["credentialSubject"]?.object?["id"] == .string("did:example:holder"))
     }
 
     @Test("Native validator applies VCDM2 validity and array subject binding at its validation date")

@@ -264,7 +264,7 @@ struct OpenID4VCW3CBackendTests {
 
     @Test("Draft 17 QESAC uses token identifier, proofs and response encryption")
     func draft17QESACRequest() async throws {
-        let transport = Draft13OpenID4VCTransport()
+        let transport = Draft13OpenID4VCTransport(credentialIssuer: "https://issuer.example/service/draft-17")
         let security = RecordingOID4VCIClientSecurity()
         let backend = OpenID4VCW3CBackend(
             transport: transport,
@@ -300,7 +300,10 @@ struct OpenID4VCW3CBackendTests {
     @Test("Draft issuance uses identifier-only request and encrypted response", arguments: ["draft-13", "draft-18"])
     func draftIssuance(revision: String) async throws {
         let usesLegacyDiscovery = revision == "draft-18"
-        let transport = Draft13OpenID4VCTransport(legacyWellKnownOnly: usesLegacyDiscovery)
+        let transport = Draft13OpenID4VCTransport(
+            legacyWellKnownOnly: usesLegacyDiscovery,
+            credentialIssuer: "https://issuer.example/service/\(revision)"
+        )
         let security = RecordingOID4VCIClientSecurity()
         let store = FixtureCredentialStore()
         let backend = OpenID4VCW3CBackend(
@@ -463,7 +466,7 @@ struct OpenID4VCW3CBackendTests {
         )
     }
 
-    @Test("Draft issuance accepts one token-authorized identifier despite configuration mismatch")
+    @Test("Draft issuance rejects a token authorization for another configuration")
     func draftMismatchedAuthorization() async throws {
         let response = #"{"access_token":"access-token","token_type":"Bearer","c_nonce":"credential-nonce","authorization_details":[{"credential_configuration_id":"other-config","credential_identifiers":["unauthorized-pid","authorized-fallback"]}]}"#
         let transport = Draft13OpenID4VCTransport(
@@ -481,20 +484,14 @@ struct OpenID4VCW3CBackendTests {
             transportProfileRegistry: .developmentDraftCompatibility
         )
         let offer = try await backend.resolveOffer(try Self.draftOffer())
-        _ = try await backend.issue(id: offer.id, allowUntrusted: false, transactionCode: "1234")
+        await #expect(throws: OpenID4VCBackendError.credentialAuthorizationMismatch(
+            offered: "pid-config",
+            authorized: ["other-config", "unauthorized-pid", "authorized-fallback"]
+        )) {
+            _ = try await backend.issue(id: offer.id, allowUntrusted: false, transactionCode: "1234")
+        }
         let credentialRequests = (await transport.requests).filter { $0.url.path.hasSuffix("/credential") }
-        let request = try #require(credentialRequests.last)
-        let data = try #require(request.body)
-        let body = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
-        #expect(body["credential_identifier"] as? String == "authorized-fallback")
-        #expect(credentialRequests.count == 2)
-        let firstData = try #require(credentialRequests.first?.body)
-        let firstBody = try #require(JSONSerialization.jsonObject(with: firstData) as? [String: Any])
-        let firstProof = try #require(firstBody["proof"] as? [String: Any])
-        let lastProof = try #require(body["proof"] as? [String: Any])
-        let firstPayload = try Self.jwtPayload(try #require(firstProof["jwt"] as? String))
-        let lastPayload = try Self.jwtPayload(try #require(lastProof["jwt"] as? String))
-        #expect(firstPayload["jti"] as? String != lastPayload["jti"] as? String)
+        #expect(credentialRequests.isEmpty)
     }
 
     @Test("Draft issuance accepts one metadata-proven configuration alias")
@@ -680,7 +677,7 @@ struct OpenID4VCW3CBackendTests {
 
     @Test("Nested VCDM1.1 context selects the legacy profile for jwt_vc_json")
     func vcdm11ContextSelection() async throws {
-        let credential = try Self.compactJWT(payload: [
+        let credential = try Self.compactJWT(typ: "JWT", payload: [
             "iss": "did:key:issuer",
             "vc": [
                 "@context": ["https://www.w3.org/2018/credentials/v1"],
@@ -797,6 +794,42 @@ struct OpenID4VCW3CBackendTests {
         let proofs = try #require(body["proofs"] as? [String: [String]])
         let proof = try #require(proofs["jwt"]?.first)
         #expect(try Self.jwtPayload(proof)["nonce"] as? String == "nonce-from-endpoint")
+    }
+
+    @Test("Final issuance uses the credential identifier authorized by the token response")
+    func finalCredentialIdentifier() async throws {
+        let transport = FixtureOpenID4VCTransport(tokenResponse: #"{"access_token":"access","token_type":"Bearer","authorization_details":[{"credential_configuration_id":"example-vcdm2-jwt-vc","credential_identifiers":["authorized-dataset"]}]}"#)
+        let backend = OpenID4VCW3CBackend(
+            transport: transport,
+            trustEvaluator: TrustedIssuerEvaluator(),
+            keyProvider: FixtureKeyProvider(),
+            credentialStore: FixtureCredentialStore(),
+            credentialValidator: FixtureCredentialValidator(),
+            profile: try .vcdm2JWTVC()
+        )
+        let offer = try await backend.resolveOffer("https://issuer.example/offer")
+        _ = try await backend.issue(id: offer.id, allowUntrusted: false, transactionCode: "123456")
+
+        let request = try #require((await transport.requests).last { $0.url.path == "/credential" })
+        let requestBody = try #require(request.body)
+        let body = try #require(JSONSerialization.jsonObject(with: requestBody) as? [String: Any])
+        #expect(body["credential_identifier"] as? String == "authorized-dataset")
+        #expect(body["credential_configuration_id"] == nil)
+    }
+
+    @Test("Credential issuer metadata must exactly match the offer issuer")
+    func credentialIssuerMetadataIdentity() async throws {
+        let backend = OpenID4VCW3CBackend(
+            transport: FixtureOpenID4VCTransport(credentialIssuerMetadata: "https://issuer.example/other"),
+            trustEvaluator: TrustedIssuerEvaluator(),
+            keyProvider: FixtureKeyProvider(),
+            credentialStore: FixtureCredentialStore(),
+            credentialValidator: FixtureCredentialValidator(),
+            profile: try .vcdm2JWTVC()
+        )
+        await #expect(throws: OpenID4VCBackendError.invalidResponse) {
+            _ = try await backend.resolveOffer("https://issuer.example/offer")
+        }
     }
 
     @Test("Production does not send an HTTPS credential_issuer service identity to signer trust")
@@ -1218,13 +1251,14 @@ struct OpenID4VCW3CBackendTests {
         let holder = try KeyDIDResolver().derive(
             publicKeyX963: try await keys.publicKey(id: key.id).x963Representation
         )
-        let credential = try Self.compactJWT(payload: [
+        let credential = try Self.compactJWT(typ: "JWT", payload: [
             "iss": "did:key:issuer",
             "sub": holder,
             "vc": [
                 "@context": ["https://www.w3.org/2018/credentials/v1"],
                 "type": ["VerifiableCredential", "PersonIdentificationData"],
                 "issuer": "did:key:issuer",
+                "issuanceDate": "2026-01-01T00:00:00Z",
                 "credentialSubject": [
                     "id": holder,
                     "given_name": "Ada",
@@ -1735,13 +1769,13 @@ struct OpenID4VCW3CBackendTests {
         return try await backend.resolveOffer("openid-credential-offer://?credential_offer=\(encoded)")
     }
 
-    private static func compactJWT(payload: [String: Any]) throws -> String {
+    private static func compactJWT(typ: String = "vc+jwt", payload: [String: Any]) throws -> String {
         func encode(_ object: Any) throws -> String {
             try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
                 .base64EncodedString().replacingOccurrences(of: "+", with: "-")
                 .replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: "=", with: "")
         }
-        return try "\(encode(["alg": "ES256", "typ": "vc+jwt"])).\(encode(payload)).signature"
+        return try "\(encode(["alg": "ES256", "typ": typ])).\(encode(payload)).signature"
     }
 
     private static func disclosure(name: String, value: String) throws -> String {
@@ -1909,6 +1943,7 @@ private actor WildcardIssuerMetadataTransport: OpenID4VCHTTPTransport {
         }
         return OpenID4VCHTTPResponse(statusCode: 200, body: Data(#"""
         {
+          "credential_issuer":"https://issuer.example",
           "credential_endpoint":"https://issuer.example/credential",
           "credential_configurations_supported":{
             "selected":{
@@ -1940,7 +1975,7 @@ private actor DraftIARFallbackTransport: OpenID4VCHTTPTransport {
         requests.append(Request(url: url, method: method, body: body))
         switch url.path {
         case "/.well-known/openid-credential-issuer/service/draft-13":
-            return OpenID4VCHTTPResponse(statusCode: 200, body: Data(#"{"credential_endpoint":"https://issuer.example/credential","authorization_servers":["https://issuer.example/service/draft-13"],"credential_configurations_supported":{"pid":{"format":"dc+sd-jwt","vct":"urn:example:pid"}}}"#.utf8))
+            return OpenID4VCHTTPResponse(statusCode: 200, body: Data(#"{"credential_issuer":"https://issuer.example/service/draft-13","credential_endpoint":"https://issuer.example/credential","authorization_servers":["https://issuer.example/service/draft-13"],"credential_configurations_supported":{"pid":{"format":"dc+sd-jwt","vct":"urn:example:pid"}}}"#.utf8))
         case "/.well-known/oauth-authorization-server/service/draft-13":
             return OpenID4VCHTTPResponse(statusCode: 200, body: Data(#"{"issuer":"https://issuer.example/service/draft-13","authorization_endpoint":"https://issuer.example/service/draft-13/authorize","token_endpoint":"https://issuer.example/token"}"#.utf8))
         case "/service/draft-13/authorize":
@@ -1972,7 +2007,7 @@ private actor VPThenWebTransport: OpenID4VCHTTPTransport {
         let form = String(decoding: body ?? Data(), as: UTF8.self)
         switch url.path {
         case "/.well-known/openid-credential-issuer":
-            return .init(statusCode: 200, body: Data(#"{"credential_endpoint":"https://issuer.example/credential","authorization_servers":["https://issuer.example"],"credential_configurations_supported":{"example-vcdm2-jwt-vc":{"format":"application/vc+jwt"}}}"#.utf8))
+            return .init(statusCode: 200, body: Data(#"{"credential_issuer":"https://issuer.example","credential_endpoint":"https://issuer.example/credential","authorization_servers":["https://issuer.example"],"credential_configurations_supported":{"example-vcdm2-jwt-vc":{"format":"application/vc+jwt"}}}"#.utf8))
         case "/.well-known/oauth-authorization-server":
             return .init(statusCode: 200, body: Data(#"{"authorization_endpoint":"https://issuer.example/browser-authorize","authorization_challenge_endpoint":"https://issuer.example/authorize-challenge","token_endpoint":"https://issuer.example/token"}"#.utf8))
         case "/authorize-challenge" where form.contains("issuer_state="):
@@ -2075,6 +2110,8 @@ private actor FixtureOpenID4VCTransport: OpenID4VCHTTPTransport {
     private let twoDeferredConfigurations: Bool
     private let secondDeferredFails: Bool
     private let advertisesNonceEndpoint: Bool
+    private let tokenResponse: String
+    private let credentialIssuerMetadata: String
     private var authorizationState: String?
 
     init(
@@ -2095,7 +2132,9 @@ private actor FixtureOpenID4VCTransport: OpenID4VCHTTPTransport {
         completedCredentialStatus: Int = 200,
         twoDeferredConfigurations: Bool = false,
         secondDeferredFails: Bool = false,
-        advertisesNonceEndpoint: Bool = false
+        advertisesNonceEndpoint: Bool = false,
+        tokenResponse: String = #"{"access_token":"access","token_type":"Bearer","c_nonce":"nonce-1"}"#,
+        credentialIssuerMetadata: String = "https://issuer.example"
     ) {
         self.presentationFormat = presentationFormat
         self.credentialFormat = credentialFormat
@@ -2115,6 +2154,8 @@ private actor FixtureOpenID4VCTransport: OpenID4VCHTTPTransport {
         self.twoDeferredConfigurations = twoDeferredConfigurations
         self.secondDeferredFails = secondDeferredFails
         self.advertisesNonceEndpoint = advertisesNonceEndpoint
+        self.tokenResponse = tokenResponse
+        self.credentialIssuerMetadata = credentialIssuerMetadata
     }
     func send(url: URL, method: String, headers: [String: String], body: Data?) async throws -> OpenID4VCHTTPResponse {
         requests.append(Request(url: url, method: method, headers: headers, body: body))
@@ -2134,12 +2175,12 @@ private actor FixtureOpenID4VCTransport: OpenID4VCHTTPTransport {
                 ? #""nonce_endpoint":"https://issuer.example/nonce","#
                 : ""
             response = """
-            {"credential_endpoint":"https://issuer.example/credential",\(nonceEndpoint)"deferred_credential_endpoint":"https://issuer.example/deferred","notification_endpoint":"https://issuer.example/notification","authorization_servers":["https://issuer.example"],"credential_configurations_supported":{"example-vcdm2-jwt-vc":{"format":"\(credentialFormat)","display":[{"name":"Legal Person ID","locale":"en","description":"Legal person credential","background_color":"#003366","text_color":"#ffffff","logo":{"uri":"https://assets.example/logo.png","alt_text":"Issuer mark"},"background_image":{"uri":"https://assets.example/background.png"}}]}\(secondConfiguration)}}
+            {"credential_issuer":"\(credentialIssuerMetadata)","credential_endpoint":"https://issuer.example/credential",\(nonceEndpoint)"deferred_credential_endpoint":"https://issuer.example/deferred","notification_endpoint":"https://issuer.example/notification","authorization_servers":["https://issuer.example"],"credential_configurations_supported":{"example-vcdm2-jwt-vc":{"format":"\(credentialFormat)","display":[{"name":"Legal Person ID","locale":"en","description":"Legal person credential","background_color":"#003366","text_color":"#ffffff","logo":{"uri":"https://assets.example/logo.png","alt_text":"Issuer mark"},"background_image":{"uri":"https://assets.example/background.png"}}]}\(secondConfiguration)}}
             """
         case "/.well-known/oauth-authorization-server":
             response = #"{"authorization_challenge_endpoint":"https://issuer.example/authorize-challenge","token_endpoint":"https://issuer.example/token"}"#
         case "/token":
-            response = #"{"access_token":"access","token_type":"Bearer","c_nonce":"nonce-1"}"#
+            response = tokenResponse
         case "/nonce":
             response = #"{"c_nonce":"nonce-from-endpoint"}"#
         case "/authorize-challenge", "/authorize":
@@ -2296,6 +2337,7 @@ private actor Draft13OpenID4VCTransport: OpenID4VCHTTPTransport {
     private let legacyWellKnownOnly: Bool
     private let rejectedCredentialIdentifier: String?
     private let plaintextCredentialResponse: Bool
+    private let credentialIssuer: String
 
     init(
         tokenResponse: String = #"{"access_token":"access-token","token_type":"Bearer","c_nonce":"credential-nonce","authorization_details":[{"type":"openid_credential","credential_configuration_id":"pid-config","credential_identifiers":["authorized-pid"]}]}"#,
@@ -2304,7 +2346,8 @@ private actor Draft13OpenID4VCTransport: OpenID4VCHTTPTransport {
         advertisesDPoP: Bool = true,
         legacyWellKnownOnly: Bool = false,
         rejectedCredentialIdentifier: String? = nil,
-        plaintextCredentialResponse: Bool = false
+        plaintextCredentialResponse: Bool = false,
+        credentialIssuer: String = "https://issuer.example/service/draft-13"
     ) {
         self.tokenResponse = tokenResponse
         self.allowsAnonymousAuthentication = allowsAnonymousAuthentication
@@ -2313,6 +2356,7 @@ private actor Draft13OpenID4VCTransport: OpenID4VCHTTPTransport {
         self.legacyWellKnownOnly = legacyWellKnownOnly
         self.rejectedCredentialIdentifier = rejectedCredentialIdentifier
         self.plaintextCredentialResponse = plaintextCredentialResponse
+        self.credentialIssuer = credentialIssuer
     }
 
     func send(url: URL, method: String, headers: [String: String], body: Data?) async throws -> OpenID4VCHTTPResponse {
@@ -2325,7 +2369,7 @@ private actor Draft13OpenID4VCTransport: OpenID4VCHTTPTransport {
                 response = "Demo issuer landing page"
                 statusCode = 200
             } else {
-                response = #"{"credential_endpoint":"https://issuer.example/credential","authorization_servers":["https://issuer.example/service/draft-13"],"credential_configurations_supported":{"pid-config":{"format":"dc+sd-jwt","vct":"urn:example:pid"},"pid-alias":{"format":"dc+sd-jwt","vct":"urn:example:pid"},"pid-alias-two":{"format":"dc+sd-jwt","vct":"urn:example:pid"},"other-config":{"format":"dc+sd-jwt","vct":"urn:example:legal-person"}},"notification_endpoint":"https://issuer.example/notification"}"#
+                response = #"{"credential_issuer":"\#(credentialIssuer)","credential_endpoint":"https://issuer.example/credential","authorization_servers":["https://issuer.example/service/draft-13"],"credential_configurations_supported":{"pid-config":{"format":"dc+sd-jwt","vct":"urn:example:pid"},"pid-alias":{"format":"dc+sd-jwt","vct":"urn:example:pid"},"pid-alias-two":{"format":"dc+sd-jwt","vct":"urn:example:pid"},"other-config":{"format":"dc+sd-jwt","vct":"urn:example:legal-person"}},"notification_endpoint":"https://issuer.example/notification"}"#
                 statusCode = 200
             }
         } else if url.path.contains("/.well-known/oauth-authorization-server") {

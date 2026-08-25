@@ -585,6 +585,9 @@ public actor OpenID4VCW3CBackend {
             standardURL: issuerMetadataURL,
             stage: "credential issuer metadata"
         )
+        guard issuerMetadata.credentialIssuer == issuer.absoluteString else {
+            throw OpenID4VCBackendError.invalidResponse
+        }
         let selectedConfigurations = try offer.credentialConfigurationIds.map { configurationID in
             guard let configuration = issuerMetadata.credentialConfigurations[configurationID] else {
                 throw OpenID4VCBackendError.unsupportedGrant
@@ -1654,22 +1657,13 @@ public actor OpenID4VCW3CBackend {
                 }
                 var matchedIndexes: Set<Int> = []
                 for offeredID in transaction.configurationIDs {
-                    var ranked = authorizationDetails.indices.compactMap { index -> (Int, Int, String)? in
+                    let ranked = authorizationDetails.indices.compactMap { index -> (Int, Int, String)? in
                         guard let match = Self.draftAuthorizationMatch(
                             offeredID: offeredID,
                             detail: authorizationDetails[index],
                             configurations: transaction.issuerMetadata.credentialConfigurations
                         ) else { return nil }
                         return (index, match.score, match.credentialIdentifier)
-                    }
-                    if ranked.isEmpty,
-                       transaction.configurationIDs.count == 1,
-                       authorizationDetails.count == 1 {
-                        ranked = authorizationDetails.indices.compactMap { index in
-                            guard let identifier = authorizationDetails[index].credentialIdentifiers?
-                                .first(where: { !$0.isEmpty }) else { return nil }
-                            return (index, 0, identifier)
-                        }
                     }
                     let highestScore = ranked.map(\.1).max()
                     let candidates = ranked.filter { $0.1 == highestScore }
@@ -1691,12 +1685,24 @@ public actor OpenID4VCW3CBackend {
             }
             configurationIDs = transaction.configurationIDs
         } else {
-            let advertisedConfigurationIDs = Set(transaction.issuerMetadata.credentialConfigurations.keys)
-            let authorizedConfigurationIDs = token.authorizationDetails?.compactMap(\.credentialConfigurationID)
-                .filter { !$0.isEmpty && advertisedConfigurationIDs.contains($0) } ?? []
-            configurationIDs = authorizedConfigurationIDs.isEmpty
-                ? transaction.configurationIDs
-                : authorizedConfigurationIDs
+            if let authorizationDetails = token.authorizationDetails {
+                guard !authorizationDetails.isEmpty else {
+                    throw OpenID4VCBackendError.missingCredentialAuthorization
+                }
+                for offeredID in transaction.configurationIDs {
+                    let matches = authorizationDetails.filter { $0.credentialConfigurationID == offeredID }
+                    guard matches.count == 1,
+                          let identifiers = matches[0].credentialIdentifiers,
+                          !identifiers.isEmpty,
+                          identifiers.allSatisfy({ !$0.isEmpty }) else {
+                        throw OpenID4VCBackendError.credentialAuthorizationMismatch(
+                            offered: offeredID,
+                            authorized: Self.authorizationIdentifiers(authorizationDetails)
+                        )
+                    }
+                }
+            }
+            configurationIDs = transaction.configurationIDs
         }
         for configurationID in configurationIDs {
             let display = await offlineDisplayMetadata(
@@ -1728,10 +1734,12 @@ public actor OpenID4VCW3CBackend {
             guard let credentialEndpoint = URL(string: issuerMetadata.credentialEndpoint) else {
                 throw OpenID4VCBackendError.unsafeEndpoint
             }
+            let usesCredentialIdentifier = authorizationDetail?.credentialIdentifiers?.isEmpty == false
+                || transportContract.credentialIdentifierField == .credentialIdentifier
             let identifierCandidates: [String?]
-            if transportContract.credentialIdentifierField == .credentialIdentifier {
+            if usesCredentialIdentifier {
                 var values = draftCredentialIdentifiers[configurationID] ?? [credentialIdentifier]
-                values.append(configurationID)
+                if transportContract.profile != .final { values.append(configurationID) }
                 values = Self.uniqueNonEmpty(values)
                 identifierCandidates = values.map(Optional.some)
             } else {
@@ -1773,7 +1781,7 @@ public actor OpenID4VCW3CBackend {
                     nonce: proofNonce
                 )
                 let request = CredentialRequest(
-                    credentialConfigurationId: transportContract.credentialIdentifierField == .credentialConfigurationID ? configurationID : nil,
+                    credentialConfigurationId: usesCredentialIdentifier ? nil : configurationID,
                     credentialIdentifier: candidate,
                     format: nil,
                     proof: transportContract.proofShape == .draftProof
@@ -3337,6 +3345,7 @@ private struct TxCodeDefinition: Decodable {
 
 private struct IssuerMetadata: Decodable {
     struct Display: Decodable { let name: String? }
+    let credentialIssuer: String
     let credentialEndpoint: String
     let authorizationServers: [String]?
     let display: [Display]?
@@ -3346,6 +3355,7 @@ private struct IssuerMetadata: Decodable {
     let deferredCredentialEndpoint: String?
     let interactiveAuthorizationEndpoint: String?
     enum CodingKeys: String, CodingKey {
+        case credentialIssuer = "credential_issuer"
         case credentialEndpoint = "credential_endpoint"
         case authorizationServers = "authorization_servers"
         case display
@@ -3358,6 +3368,7 @@ private struct IssuerMetadata: Decodable {
 
     init(from decoder: any Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
+        credentialIssuer = try values.decode(String.self, forKey: .credentialIssuer)
         credentialEndpoint = try values.decode(String.self, forKey: .credentialEndpoint)
         authorizationServers = try values.decodeIfPresent([String].self, forKey: .authorizationServers)
         display = try values.decodeIfPresent([Display].self, forKey: .display)

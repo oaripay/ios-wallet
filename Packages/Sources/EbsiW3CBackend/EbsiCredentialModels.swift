@@ -183,8 +183,12 @@ public struct EbsiCredentialInspector: Sendable {
             }
             try Self.validateVCDM2Credential(payload, context: profile.context, at: validationDate)
         }
-        let credential = payload["vc"]?.object ?? payload
+        var credential = payload["vc"]?.object ?? payload
         if profile.dataModel == .v1_1 {
+            if let type = header["typ"]?.string, type != "JWT" {
+                throw EbsiCredentialError.profileMismatch
+            }
+            credential = try Self.reconstructVCDM11Credential(credential, payload: payload)
             try Self.validateVCDM11Credential(
                 credential, payload: payload, context: profile.context, at: validationDate
             )
@@ -257,6 +261,31 @@ public struct EbsiCredentialInspector: Sendable {
         try validateNumericDateClaim("exp", value: payload["exp"], matches: expirationDate)
     }
 
+    private static func reconstructVCDM11Credential(
+        _ source: [String: AnySendableJSON],
+        payload: [String: AnySendableJSON]
+    ) throws -> [String: AnySendableJSON] {
+        var credential = source
+        if credential["issuer"] == nil, let issuer = payload["iss"]?.string {
+            credential["issuer"] = .string(issuer)
+        }
+        if credential["credentialSubject"] == nil, let subject = payload["sub"]?.string {
+            credential["credentialSubject"] = .object(["id": .string(subject)])
+        }
+        if credential["id"] == nil, let identifier = payload["jti"]?.string {
+            credential["id"] = .string(identifier)
+        }
+        if credential["issuanceDate"] == nil, let notBefore = payload["nbf"]?.numericValue {
+            guard notBefore.isFinite else { throw EbsiCredentialError.profileMismatch }
+            credential["issuanceDate"] = .string(formatDateTime(Date(timeIntervalSince1970: notBefore)))
+        }
+        if credential["expirationDate"] == nil, let expiration = payload["exp"]?.numericValue {
+            guard expiration.isFinite else { throw EbsiCredentialError.profileMismatch }
+            credential["expirationDate"] = .string(formatDateTime(Date(timeIntervalSince1970: expiration)))
+        }
+        return credential
+    }
+
     private static func validateVCDM2Credential(
         _ credential: [String: AnySendableJSON],
         context expectedContext: String,
@@ -274,7 +303,7 @@ public struct EbsiCredentialInspector: Sendable {
 
         let validFrom = try Self.dateTimeProperty("validFrom", in: credential)
         let validUntil = try Self.dateTimeProperty("validUntil", in: credential)
-        if let validFrom, let validUntil, validFrom >= validUntil {
+        if let validFrom, let validUntil, validFrom > validUntil {
             throw EbsiCredentialError.profileMismatch
         }
         if let validationDate {
@@ -357,6 +386,12 @@ public struct EbsiCredentialInspector: Sendable {
         let standard = ISO8601DateFormatter()
         standard.formatOptions = [.withInternetDateTime]
         return standard.date(from: value)
+    }
+
+    private static func formatDateTime(_ value: Date) -> String {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter.string(from: value)
     }
 
     private static func validateNumericDateClaim(

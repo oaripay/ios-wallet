@@ -1005,6 +1005,10 @@ final class WalletAppModel: ObservableObject {
                     pendingOpenID4VCSignerTrustWarning = true
                     openID4VCTrustWarning = warning
                     eudiFlow = .idle
+                case let .webAuthorizationRequired(challenge):
+                    pendingExternalURL = challenge.authorizationURL
+                    eudiFlow = .working("Waiting for issuer authentication…")
+                    startWebAuthorizationPolling(id: challenge.id)
                 }
             }
         } catch {
@@ -1038,6 +1042,8 @@ final class WalletAppModel: ObservableObject {
                 openID4VCTrustWarning = warning
             case .presentationRequired:
                 eudiFlow = .failed("Issuer authorization is required. Start the credential offer again.")
+            case .webAuthorizationRequired:
+                eudiFlow = .failed("The deferred credential returned an invalid authorization step.")
             }
         } catch {
             eudiFlow = .failed(Self.safeMessage(error))
