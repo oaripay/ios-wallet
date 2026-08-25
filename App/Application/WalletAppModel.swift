@@ -1,4 +1,5 @@
 import Foundation
+import AuthenticationServices
 import EudiWalletKitAdapter
 import EbsiW3CBackend
 import ProtocolEngine
@@ -74,6 +75,8 @@ final class WalletAppModel: ObservableObject {
     private var activeAuthenticationID: UUID?
     private var deferredSchedulerTask: Task<Void, Never>?
     private var webAuthorizationPollingTask: Task<Void, Never>?
+    private var webAuthenticationSession: ASWebAuthenticationSession?
+    private var webAuthenticationState: String?
     private(set) var autoReviewTask: Task<Void, Never>?
     private let userDefaults: UserDefaults
 
@@ -541,6 +544,30 @@ final class WalletAppModel: ObservableObject {
         handleScannedCode(url.absoluteString)
     }
 
+    private func startWebAuthentication(_ challenge: WebAuthorizationChallenge) {
+        var components = URLComponents(url: challenge.authorizationURL, resolvingAgainstBaseURL: false)
+        let state = UUID().uuidString
+        let callback = "oari-wallet-auth://callback"
+        components?.queryItems = (components?.queryItems ?? []) + [
+            URLQueryItem(name: "redirect_uri", value: callback),
+            URLQueryItem(name: "state", value: state),
+        ]
+        guard let url = components?.url else { return }
+        webAuthenticationState = state
+        let session = ASWebAuthenticationSession(url: url, callbackURLScheme: "oari-wallet-auth") { [weak self] callbackURL, error in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                defer { self.webAuthenticationSession = nil; self.webAuthenticationState = nil }
+                guard error == nil, let callbackURL,
+                      URLComponents(url: callbackURL, resolvingAgainstBaseURL: false)?.queryItems?.first(where: { $0.name == "state" })?.value == self.webAuthenticationState else { return }
+                self.webAuthorizationPollingTask?.cancel()
+                self.startWebAuthorizationPolling(id: challenge.id)
+            }
+        }
+        webAuthenticationSession = session
+        if !session.start() { webAuthenticationSession = nil }
+    }
+
     func clearPendingExternalURL() {
         pendingExternalURL = nil
     }
@@ -794,8 +821,8 @@ final class WalletAppModel: ObservableObject {
             activeOpenID4VPPresentationRequest = challenge
             eudiFlow = .openID4VPPresentationRequired(challenge)
         case let .webAuthorizationRequired(challenge):
-            pendingExternalURL = challenge.authorizationURL
             eudiFlow = .working("Waiting for issuer authentication…")
+            startWebAuthentication(challenge)
             startWebAuthorizationPolling(id: challenge.id)
         case let .credentialSignerTrustWarning(warning):
             pendingOpenID4VCSignerTrustWarning = true

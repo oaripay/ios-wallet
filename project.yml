@@ -90,6 +90,9 @@ targets:
               - eudi-openid4vp
               - mdoc-openid4vp
               - eu.europa.ec.euidi
+          - CFBundleURLName: io.oari.wallet.web-auth
+            CFBundleURLSchemes:
+              - oari-wallet-auth
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: io.oari.wallet
