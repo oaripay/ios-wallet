@@ -48,12 +48,6 @@
 				<string>eu.europa.ec.euidi</string>
 			</array>
 		</dict>
-		<dict>
-			<key>CFBundleURLName</key>
-			<string>io.oari.wallet.web-auth</string>
-			<key>CFBundleURLSchemes</key>
-			<array><string>oari-wallet-auth</string></array>
-		</dict>
 	</array>
 	<key>CFBundleVersion</key>
 	<string>1</string>
