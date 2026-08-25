@@ -29,6 +29,7 @@
 		BB5F75258CF99035C9D5D1AA /* TestTrustAnchor.bin in Resources */ = {isa = PBXBuildFile; fileRef = 4FE288BD4E8DB12A11690ACD /* TestTrustAnchor.bin */; };
 		CDFB3AAE87954A256CB95928 /* WalletScreens.swift in Sources */ = {isa = PBXBuildFile; fileRef = AF4CC319F9004EBC89FABAFF /* WalletScreens.swift */; };
 		D18A95A7B7FD98ACDA72A7F7 /* EudiFlowView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 06ABCD0EEEA385B44E0E33E3 /* EudiFlowView.swift */; };
+		D3B7E4A1C8F65290B4E6D713 /* InAppBrowserView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D3B7E4A1C8F65290B4E6D712 /* InAppBrowserView.swift */; };
 		D71990BF3F9B61F7D4199D6B /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A42FEE8B9F9E193FDA5D20AF /* Assets.xcassets */; };
 		D9FC377A1A7DDCB1E684F0E8 /* WalletAppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8542411F919BDCF644BA9608 /* WalletAppModel.swift */; };
 		DC6FB72F96D2EA04AB8A1894 /* OariDesignSystem in Frameworks */ = {isa = PBXBuildFile; productRef = 91D2FD24D582D45EA9F6E775 /* OariDesignSystem */; };
@@ -78,6 +79,7 @@
 		BC4372382A01471E0DA73729 /* CameraQRScannerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraQRScannerView.swift; sourceTree = "<group>"; };
 		D05DB91852A9414277DCB1E8 /* ios-wallet */ = {isa = PBXFileReference; lastKnownFileType = folder; name = "ios-wallet"; path = .; sourceTree = SOURCE_ROOT; };
 		D2089D4672839DD02C215BFA /* EudiReferenceDemoConfiguration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EudiReferenceDemoConfiguration.swift; sourceTree = "<group>"; };
+		D3B7E4A1C8F65290B4E6D712 /* InAppBrowserView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InAppBrowserView.swift; sourceTree = "<group>"; };
 		D762A0C443533ADDF34A33F6 /* WalletAppDependencies.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WalletAppDependencies.swift; sourceTree = "<group>"; };
 		E7D538593C4F633BF3F4A85A /* EudiReferenceDemoConfigurationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EudiReferenceDemoConfigurationTests.swift; sourceTree = "<group>"; };
 		EDE0B466C06C9A83F0B96402 /* AppConfiguration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppConfiguration.swift; sourceTree = "<group>"; };
@@ -123,6 +125,7 @@
 			isa = PBXGroup;
 			children = (
 				06ABCD0EEEA385B44E0E33E3 /* EudiFlowView.swift */,
+				D3B7E4A1C8F65290B4E6D712 /* InAppBrowserView.swift */,
 				A7B5979EF55B808B4F064CBE /* EudiWalletService.swift */,
 				9BFABEDAD628D2A7B1C46E66 /* OpenID4VCService.swift */,
 				571F63C0FA7EF5505E66EE57 /* TrustWarningView.swift */,
@@ -359,6 +362,7 @@
 				1BB8DAD1FBD782E5EF65E35F /* AppConfiguration.swift in Sources */,
 				66D008AA58F216596C073300 /* CameraQRScannerView.swift in Sources */,
 				D18A95A7B7FD98ACDA72A7F7 /* EudiFlowView.swift in Sources */,
+				D3B7E4A1C8F65290B4E6D713 /* InAppBrowserView.swift in Sources */,
 				3E54C6BBA77BB4407A664F2E /* EudiReferenceDemoConfiguration.swift in Sources */,
 				6A2D7659C18E4B273DA1302A /* EudiWalletService.swift in Sources */,
 				F2EC4943CE05D1699EED4BF7 /* OariWalletApp.swift in Sources */,
