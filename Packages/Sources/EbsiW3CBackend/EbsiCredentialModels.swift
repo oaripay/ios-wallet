@@ -75,6 +75,18 @@ public struct EbsiCredentialProfile: Codable, Equatable, Identifiable, Sendable 
         )
     }
 
+    /// Generic OpenID4VCI jwt_vc_json carrying a VCDM 2.0 credential.
+    /// This is deliberately distinct from the application/vc+jwt EBSI profile.
+    public static func vcdm2JWTVCJSON() throws -> EbsiCredentialProfile {
+        try EbsiCredentialProfile(
+            id: "vcdm2-jwt-vc-json",
+            dataModel: .v2_0,
+            representation: .jwtVcJson,
+            allowedAlgorithms: [.es256],
+            context: "https://www.w3.org/ns/credentials/v2"
+        )
+    }
+
     public static func vcdm11Jwt() throws -> EbsiCredentialProfile {
         try EbsiCredentialProfile(
             id: "ebsi-vcdm11-jwt-vc",

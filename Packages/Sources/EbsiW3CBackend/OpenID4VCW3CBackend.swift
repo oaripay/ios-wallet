@@ -50,7 +50,7 @@ public protocol W3CCredentialValidating: Sendable {
     func validate(
         rawCredential: Data,
         profile: EbsiCredentialProfile,
-        expectedIssuer: String,
+        expectedIssuer: String?,
         expectedHolderDID: String,
         at date: Date
     ) async throws -> String
@@ -411,6 +411,7 @@ public enum OpenID4VCBackendError: Error, Equatable, Sendable {
     case presentationRequired
     case invalidPresentationResponse
     case presentationCredentialUnavailable
+    case presentationCredentialUnavailableDetail(String)
     case invalidPresentationChallenge(reason: String)
     case presentationSubmissionHTTPError(method: String, path: String, status: Int, detail: String?)
     case authorizationFailed
@@ -933,13 +934,26 @@ public actor OpenID4VCW3CBackend {
         let holderIdentity = try await holderIdentity(for: id)
         let query = try Self.presentationQuery(from: challenge.dcqlQuery)
         let credentials = try await credentialStore.credentials()
-        for credential in credentials where credential.holderKeyReference == holderIdentity.keyID.rawValue.uuidString {
+        let holderKeyReference = holderIdentity.keyID.rawValue.uuidString
+        let holderCredentials = credentials.filter {
+            $0.holderKeyReference == holderKeyReference
+        }
+        guard !holderCredentials.isEmpty else {
+            throw OpenID4VCBackendError.presentationCredentialUnavailableDetail(
+                "Stored W3C credentials do not belong to the current holder key. " +
+                "stored=\(credentials.count), currentHolder=\(holderKeyReference)"
+            )
+        }
+        for credential in holderCredentials {
             var claims: [DCQLRequestedClaim] = []
             let kind: PreparedW3CPresentation.Kind
-            switch (query.format, credential.representation) {
-            case ("dc+sd-jwt", .dcSdJwt):
+            switch query.format {
+            case "dc+sd-jwt" where Self.isCompatible(
+                requestedFormat: query.format,
+                representation: credential.representation
+            ):
                 let parsed = try Self.parseStoredSDJWT(credential.rawCredential)
-                guard query.vctValues.contains(parsed.vct) else { continue }
+                guard Self.matchesVCT(parsed.vct, accepted: query.vctValues) else { continue }
                 var disclosures: [String: String] = [:]
                 var satisfies = true
                 for requestedClaim in query.claims {
@@ -964,7 +978,10 @@ public actor OpenID4VCW3CBackend {
                 }
                 guard satisfies else { continue }
                 kind = .sdJWT(issuerJWT: parsed.issuerJWT, disclosures: disclosures)
-            case ("jwt_vc_json", .jwtVcJson), ("jwt_vc_json", .vcdm2Jwt):
+            case "jwt_vc_json" where Self.isCompatible(
+                requestedFormat: query.format,
+                representation: credential.representation
+            ):
                 guard let profile = profiles.first(where: { $0.id == credential.profileID }) else { continue }
                 let compact = String(decoding: credential.rawCredential, as: UTF8.self)
                 let document = try EbsiCredentialInspector().inspectCompactJWT(compact, profile: profile)
@@ -999,7 +1016,10 @@ public actor OpenID4VCW3CBackend {
                 transactionData: challenge.transactionData
             )
         }
-        throw OpenID4VCBackendError.presentationCredentialUnavailable
+        throw OpenID4VCBackendError.presentationCredentialUnavailableDetail(
+            "Stored W3C credentials matched the current holder key but not the requested " +
+            "format, VCT/type, or claims. requestedFormat=\(query.format)"
+        )
     }
 
     public func pollWebAuthorization(id: UUID) async throws -> WebAuthorizationPollResult {
@@ -1650,6 +1670,7 @@ public actor OpenID4VCW3CBackend {
         let configurationIDs: [String]
         var draftAuthorizationDetails: [String: TokenResponse.AuthorizationDetail] = [:]
         var draftCredentialIdentifiers: [String: [String]] = [:]
+        var finalAuthorizationDetails: [String: TokenResponse.AuthorizationDetail] = [:]
         if transportContract.profile != .final {
             if let authorizationDetails = token.authorizationDetails {
                 guard !authorizationDetails.isEmpty else {
@@ -1690,7 +1711,13 @@ public actor OpenID4VCW3CBackend {
                     throw OpenID4VCBackendError.missingCredentialAuthorization
                 }
                 for offeredID in transaction.configurationIDs {
-                    let matches = authorizationDetails.filter { $0.credentialConfigurationID == offeredID }
+                    let matches = authorizationDetails.filter {
+                        Self.authorizationDetailMatches(
+                            offeredID: offeredID,
+                            detail: $0,
+                            configurations: transaction.issuerMetadata.credentialConfigurations
+                        )
+                    }
                     guard matches.count == 1,
                           let identifiers = matches[0].credentialIdentifiers,
                           !identifiers.isEmpty,
@@ -1700,6 +1727,7 @@ public actor OpenID4VCW3CBackend {
                             authorized: Self.authorizationIdentifiers(authorizationDetails)
                         )
                     }
+                    finalAuthorizationDetails[offeredID] = matches[0]
                 }
             }
             configurationIDs = transaction.configurationIDs
@@ -1709,7 +1737,7 @@ public actor OpenID4VCW3CBackend {
                 transaction.issuerMetadata.credentialConfigurations[configurationID]?.display
             )
             let authorizationDetail = transportContract.profile == .final
-                ? token.authorizationDetails?.first { $0.credentialConfigurationID == configurationID }
+                ? finalAuthorizationDetails[configurationID]
                 : draftAuthorizationDetails[configurationID]
             let credentialIdentifier = draftCredentialIdentifiers[configurationID]?.first
                 ?? authorizationDetail?.credentialIdentifiers?.first(where: { !$0.isEmpty })
@@ -2067,7 +2095,7 @@ public actor OpenID4VCW3CBackend {
             let signedIssuer = try await credentialValidator.validate(
                 rawCredential: item.stored.rawCredential,
                 profile: profile,
-                expectedIssuer: state.issuer.absoluteString,
+                expectedIssuer: nil,
                 expectedHolderDID: state.holderIdentity.did,
                 at: now()
             )
@@ -2203,7 +2231,7 @@ public actor OpenID4VCW3CBackend {
             let signedIssuer = try await credentialValidator.validate(
                 rawCredential: raw,
                 profile: selectedProfile,
-                expectedIssuer: issuer.absoluteString,
+                expectedIssuer: nil,
                 expectedHolderDID: holderIdentity.did,
                 at: now()
             )
@@ -2319,19 +2347,28 @@ public actor OpenID4VCW3CBackend {
             return profile
         }
         let context = Self.jwtContext(rawCredential)
-        if context == "https://www.w3.org/ns/credentials/v2",
+        if format == "jwt_vc_json" {
+            if context == "https://www.w3.org/ns/credentials/v2",
+               let profile = profiles.first(where: {
+                   $0.representation == .jwtVcJson && $0.dataModel == .v2_0
+               }) {
+                return profile
+            }
+            if context == "https://www.w3.org/2018/credentials/v1",
+               let profile = profiles.first(where: { $0.dataModel == .v1_1 }) {
+                return profile
+            }
+
+            // jwt_vc_json is a representation label, not a complete VCDM
+            // version indicator. Keep accepting legacy JWT VCs whose issuer
+            // metadata does not expose the v1.1 context explicitly.
+            if let profile = profiles.first(where: { $0.dataModel == .v1_1 }) {
+                return profile
+            }
+        }
+        if format == "application/vc+jwt",
            let profile = profiles.first(where: { $0.representation == .vcdm2Jwt }) {
             return profile
-        }
-        if context == "https://www.w3.org/2018/credentials/v1",
-           format == "jwt_vc_json" || format == "jwt_vc_json-ld",
-           let profile = profiles.first(where: { $0.dataModel == .v1_1 }) {
-            return profile
-        }
-        if format == "jwt_vc_json" || format == "jwt_vc_json-ld" {
-            // Do not infer VCDM 1.1 from the generic OID4VCI format label.
-            // Unknown contexts must not be silently accepted as legacy VCs.
-            throw EbsiCredentialError.unsupportedRepresentation
         }
         guard let profile = profiles.first(where: { $0.representation == .vcdm2Jwt }) else {
             throw EbsiCredentialError.unsupportedRepresentation
@@ -2640,6 +2677,31 @@ public actor OpenID4VCW3CBackend {
         return typeValues.contains { Set($0).isSubset(of: types) }
     }
 
+    private static func isCompatible(
+        requestedFormat: String,
+        representation: EbsiCredentialRepresentation
+    ) -> Bool {
+        switch requestedFormat {
+        case "dc+sd-jwt":
+            return representation == .dcSdJwt || representation == .vcdm2SdJwt
+        case "jwt_vc_json":
+            return representation == .jwtVcJson || representation == .vcdm2Jwt
+        case "application/vc+jwt":
+            return representation == .vcdm2Jwt
+        case "jwt_vc_json-ld":
+            return representation == .jwtVcJson
+        default:
+            return false
+        }
+    }
+
+    private static func matchesVCT(
+        _ actual: String,
+        accepted: Set<String>
+    ) -> Bool {
+        accepted.contains { actual == $0 || actual.hasPrefix($0) }
+    }
+
     private static func parseStoredSDJWT(_ rawCredential: Data) throws -> (
         issuerJWT: String,
         vct: String,
@@ -2683,13 +2745,49 @@ public actor OpenID4VCW3CBackend {
         configurations: [String: SupportedConfiguration]
     ) -> Bool {
         if offeredID == authorizedID { return true }
-        guard let offered = configurations[offeredID],
-              let authorized = configurations[authorizedID],
-              let offeredVCT = offered.vct, !offeredVCT.isEmpty,
-              offeredVCT == authorized.vct else {
-            return false
+        guard let offered = configurations[offeredID] else { return false }
+
+        if let authorized = configurations[authorizedID] {
+            guard let offeredVCT = offered.vct, !offeredVCT.isEmpty,
+                  offeredVCT == authorized.vct else {
+                return false
+            }
+            return offered.format == authorized.format
         }
-        return offered.format == authorized.format
+
+        // Some issuers return a VCT-like credential configuration identifier
+        // instead of the metadata key. Keep this compatibility bounded to the
+        // explicitly requested SD-JWT VCT family.
+        guard offered.format == "dc+sd-jwt",
+              let offeredVCT = offered.vct else { return false }
+        return matchesVCT(authorizedID, accepted: Set([offeredVCT]))
+    }
+
+    private static func authorizationDetailMatches(
+        offeredID: String,
+        detail: TokenResponse.AuthorizationDetail,
+        configurations: [String: SupportedConfiguration]
+    ) -> Bool {
+        guard let offered = configurations[offeredID] else { return false }
+        if detail.credentialConfigurationID == offeredID { return true }
+
+        if let authorizedID = detail.credentialConfigurationID {
+            if equivalentDraftConfiguration(
+                offeredID: offeredID,
+                authorizedID: authorizedID,
+                configurations: configurations
+            ) {
+                return true
+            }
+
+            if offered.format == "dc+sd-jwt",
+               let offeredVCT = offered.vct,
+               matchesVCT(authorizedID, accepted: Set([offeredVCT])) {
+                return true
+            }
+        }
+
+        return false
     }
 
     private static func draftAuthorizationMatch(

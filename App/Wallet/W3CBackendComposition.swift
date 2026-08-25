@@ -29,7 +29,7 @@ struct W3CBackendComposition: Sendable {
 
     static func additionalProfiles() throws -> [EbsiCredentialProfile] {
         // Do not collapse these: their data model and wire representations differ.
-        [try .vcdm11Jwt(), try .dcSdJWTVC(), try .vcdm2SdJWT()]
+        [try .vcdm2JWTVCJSON(), try .vcdm11Jwt(), try .dcSdJWTVC(), try .vcdm2SdJWT()]
     }
 
     static func ownsCredential(backendID: String?) -> Bool {

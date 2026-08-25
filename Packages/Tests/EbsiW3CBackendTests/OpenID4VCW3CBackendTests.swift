@@ -1894,7 +1894,7 @@ private struct LiveDiagnosticCredentialValidator: W3CCredentialValidating {
     func validate(
         rawCredential: Data,
         profile: EbsiCredentialProfile,
-        expectedIssuer: String,
+        expectedIssuer: String?,
         expectedHolderDID: String,
         at date: Date
     ) async throws -> String {
@@ -2497,7 +2497,7 @@ private actor FixtureCredentialValidator: W3CCredentialValidating {
     func validate(
         rawCredential: Data,
         profile: EbsiCredentialProfile,
-        expectedIssuer: String,
+        expectedIssuer: String?,
         expectedHolderDID: String,
         at date: Date
     ) async throws -> String {

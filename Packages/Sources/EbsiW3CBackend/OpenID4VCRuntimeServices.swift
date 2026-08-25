@@ -425,7 +425,7 @@ public struct NativeW3CCredentialValidator: W3CCredentialValidating, Sendable {
     public func validate(
         rawCredential: Data,
         profile: EbsiCredentialProfile,
-        expectedIssuer: String,
+        expectedIssuer: String? = nil,
         expectedHolderDID: String,
         at date: Date
     ) async throws -> String {
@@ -489,7 +489,10 @@ public struct NativeW3CCredentialValidator: W3CCredentialValidating, Sendable {
         return issuer
     }
 
-    private func validateIssuerBinding(signedIssuer: String, expectedIssuer: String) throws {
+    private func validateIssuerBinding(signedIssuer: String, expectedIssuer: String?) throws {
+        // OpenID4VCI's credential issuer URL and the VC issuer identifier may
+        // differ (for example, an HTTPS issuer endpoint issuing for a DID).
+        guard let expectedIssuer else { return }
         if signedIssuer == expectedIssuer { return }
         guard allowsDIDIssuerDelegation, signedIssuer.hasPrefix("did:") else {
             throw EbsiCredentialError.issuerMismatch

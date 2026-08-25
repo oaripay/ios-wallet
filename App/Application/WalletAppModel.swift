@@ -1346,6 +1346,8 @@ final class WalletAppModel: ObservableObject {
             case .invalidPresentationResponse: return "The issuer rejected the PID presentation response."
             case .presentationCredentialUnavailable:
                 return "No stored W3C credential satisfies the verifier's requested format, type, and claims."
+            case let .presentationCredentialUnavailableDetail(detail):
+                return "No matching W3C credential: \(detail)"
             case let .invalidPresentationChallenge(reason):
                 return "The verifier presentation challenge was invalid: \(reason)."
             case let .presentationSubmissionHTTPError(method, path, status, detail):
