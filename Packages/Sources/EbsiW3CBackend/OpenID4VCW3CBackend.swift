@@ -2106,7 +2106,12 @@ public actor OpenID4VCW3CBackend {
             switch format {
             case "dc+sd-jwt": profile.representation == .dcSdJwt
             case "vcdm2_sd_jwt": profile.representation == .vcdm2SdJwt
-            case "jwt_vc_json", "jwt_vc_json-ld": profile.dataModel == .v1_1
+            // jwt_vc_json identifies the JWT VC representation, not a specific
+            // W3C data-model version. The credential context selects 1.1 vs 2.0
+            // after the credential response has been decoded.
+            case "jwt_vc_json":
+                profile.representation == .jwtVcJson || profile.representation == .vcdm2Jwt
+            case "jwt_vc_json-ld": profile.dataModel == .v1_1
             case "application/vc+jwt": profile.representation == .vcdm2Jwt
             default: false
             }
@@ -2309,15 +2314,15 @@ public actor OpenID4VCW3CBackend {
            let profile = profiles.first(where: { $0.representation == .vcdm2Jwt }) {
             return profile
         }
-        if format == "jwt_vc_json" || format == "jwt_vc_json-ld" {
-            guard let profile = profiles.first(where: { $0.dataModel == .v1_1 }) else {
-                throw EbsiCredentialError.unsupportedRepresentation
-            }
-            return profile
-        }
         if context == "https://www.w3.org/2018/credentials/v1",
+           format == "jwt_vc_json" || format == "jwt_vc_json-ld",
            let profile = profiles.first(where: { $0.dataModel == .v1_1 }) {
             return profile
+        }
+        if format == "jwt_vc_json" || format == "jwt_vc_json-ld" {
+            // Do not infer VCDM 1.1 from the generic OID4VCI format label.
+            // Unknown contexts must not be silently accepted as legacy VCs.
+            throw EbsiCredentialError.unsupportedRepresentation
         }
         guard let profile = profiles.first(where: { $0.representation == .vcdm2Jwt }) else {
             throw EbsiCredentialError.unsupportedRepresentation
@@ -2335,8 +2340,17 @@ public actor OpenID4VCW3CBackend {
               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             return nil
         }
-        if let contexts = object["@context"] as? [String] { return contexts.first }
-        return object["@context"] as? String
+        if let contexts = object["@context"] as? [String], let context = contexts.first {
+            return context
+        }
+        if let context = object["@context"] as? String { return context }
+        if let credential = object["vc"] as? [String: Any] {
+            if let contexts = credential["@context"] as? [String], let context = contexts.first {
+                return context
+            }
+            return credential["@context"] as? String
+        }
+        return nil
     }
 
     private static func supportedRepresentation(_ format: String) -> Bool {

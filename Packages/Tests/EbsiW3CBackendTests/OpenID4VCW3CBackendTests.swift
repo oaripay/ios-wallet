@@ -678,6 +678,39 @@ struct OpenID4VCW3CBackendTests {
         #expect(issued.first?.representation == .vcdm2Jwt)
     }
 
+    @Test("Nested VCDM1.1 context selects the legacy profile for jwt_vc_json")
+    func vcdm11ContextSelection() async throws {
+        let credential = try Self.compactJWT(payload: [
+            "iss": "did:key:issuer",
+            "vc": [
+                "@context": ["https://www.w3.org/2018/credentials/v1"],
+                "type": ["VerifiableCredential", "ExampleCredential"],
+                "issuer": "did:key:issuer",
+                "credentialSubject": ["id": "did:key:holder"],
+            ],
+        ])
+        let backend = OpenID4VCW3CBackend(
+            transport: FixtureOpenID4VCTransport(
+                credentialFormat: "jwt_vc_json",
+                credentialResponse: credential
+            ),
+            trustEvaluator: TrustedIssuerEvaluator(),
+            keyProvider: FixtureKeyProvider(),
+            credentialStore: FixtureCredentialStore(),
+            credentialValidator: FixtureCredentialValidator(),
+            profile: try .vcdm2JWTVC(),
+            additionalProfiles: [try .vcdm11Jwt()]
+        )
+        let offer = try await backend.resolveOffer("https://issuer.example/offer")
+        let issued = try await backend.issue(
+            id: offer.id,
+            allowUntrusted: false,
+            transactionCode: "123456"
+        )
+        #expect(issued.first?.profileID == "ebsi-vcdm11-jwt-vc")
+        #expect(issued.first?.representation == .jwtVcJson)
+    }
+
     @Test("Credential metadata paths normalize wildcard and array index components")
     func credentialMetadataPathComponents() throws {
         let claim = try JSONDecoder().decode(
