@@ -25,6 +25,30 @@ public protocol OpenID4VCHTTPTransport: Sendable {
     ) async throws -> OpenID4VCHTTPResponse
 }
 
+public struct OpenID4VCClientConfiguration: Equatable, Sendable {
+    public let clientID: String
+    public let redirectURI: URL
+
+    public init(clientID: String, redirectURI: URL) throws {
+        let scheme = redirectURI.scheme?.lowercased()
+        guard !clientID.isEmpty,
+              let scheme,
+              scheme != "http",
+              scheme != "file",
+              scheme != "ftp",
+              redirectURI.host != nil,
+              redirectURI.user == nil,
+              redirectURI.password == nil,
+              redirectURI.port == nil,
+              redirectURI.query == nil,
+              redirectURI.fragment == nil else {
+            throw OpenID4VCBackendError.unsafeEndpoint
+        }
+        self.clientID = clientID
+        self.redirectURI = redirectURI
+    }
+}
+
 public protocol CredentialIssuerServiceTrustEvaluating: Sendable {
     func evaluate(issuer: String, at date: Date) async -> TrustVerdict
 }
@@ -166,14 +190,22 @@ public struct CredentialConfigurationClaim: Codable, Equatable, Sendable, Identi
 
 public struct WebAuthorizationChallenge: Equatable, Identifiable, Sendable {
     public let id: UUID
-    public let authSession: String
+    public let authSession: String?
     public let authorizationURL: URL
     public let authorizationChallengeEndpoint: URL
-    public init(id: UUID, authSession: String, authorizationURL: URL, authorizationChallengeEndpoint: URL) {
+    public let expiresIn: Int?
+    public init(
+        id: UUID,
+        authSession: String? = nil,
+        authorizationURL: URL,
+        authorizationChallengeEndpoint: URL,
+        expiresIn: Int? = nil
+    ) {
         self.id = id
         self.authSession = authSession
         self.authorizationURL = authorizationURL
         self.authorizationChallengeEndpoint = authorizationChallengeEndpoint
+        self.expiresIn = expiresIn
     }
 }
 
@@ -436,6 +468,11 @@ public actor OpenID4VCW3CBackend {
         let trustOutcome: EbsiTrustGateOutcome
     }
 
+    private struct AuthorizationServerContext: Sendable {
+        let server: URL
+        let metadata: AuthorizationMetadata
+    }
+
     private struct StagedCredential: Sendable {
         let stored: StoredEbsiCredential
         let result: IssuedW3CCredential
@@ -477,8 +514,7 @@ public actor OpenID4VCW3CBackend {
     private let presentationRequestValidator: (any OpenID4VPRequestObjectValidating)?
     private let presentationReplayProtection: any OpenID4VPReplayProtecting
     private let trustEnvironment: EbsiTrustEnvironment
-    private let authorizationClientID: String
-    private let authorizationRedirectURI: URL
+    private let clientConfiguration: OpenID4VCClientConfiguration
     private let now: @Sendable () -> Date
     private var transactions: [UUID: Transaction] = [:]
     private var authorizationCodes: [UUID: String] = [:]
@@ -488,6 +524,7 @@ public actor OpenID4VCW3CBackend {
     private var presentationChallenges: [UUID: OpenID4VPPresentationRequest] = [:]
     private var presentationChallengeTasks: [UUID: Task<InteractiveAuthorizationChallenge, Error>] = [:]
     private var interactiveAuthorizationContexts: [UUID: InteractiveAuthorizationContext] = [:]
+    private var authorizationServerContexts: [UUID: AuthorizationServerContext] = [:]
     private var preparedPIDPresentations: [UUID: PreparedW3CPresentation] = [:]
     private var transactionHolderIdentities: [UUID: W3CHolderIdentity] = [:]
     private var stagedCredentials: [UUID: StagedIssuance] = [:]
@@ -500,6 +537,7 @@ public actor OpenID4VCW3CBackend {
         credentialStore: any EbsiCredentialStore,
         credentialValidator: any W3CCredentialValidating,
         profile: EbsiCredentialProfile,
+        clientConfiguration: OpenID4VCClientConfiguration,
         additionalProfiles: [EbsiCredentialProfile] = [],
         clientSecurity: (any OID4VCIClientSecurity)? = nil,
         transportProfileRegistry: OID4VCITransportProfileRegistry = .finalOnly,
@@ -507,8 +545,6 @@ public actor OpenID4VCW3CBackend {
         presentationRequestValidator: (any OpenID4VPRequestObjectValidating)? = nil,
         presentationReplayProtection: any OpenID4VPReplayProtecting = InMemoryOpenID4VPReplayStore(),
         trustEnvironment: EbsiTrustEnvironment = .development,
-        authorizationClientID: String = "oari-development-wallet",
-        authorizationRedirectURI: URL = URL(string: "https://oari.io/oauth/callback")!,
         now: @escaping @Sendable () -> Date = Date.init
     ) {
         self.transport = transport
@@ -528,8 +564,7 @@ public actor OpenID4VCW3CBackend {
         self.presentationRequestValidator = presentationRequestValidator
         self.presentationReplayProtection = presentationReplayProtection
         self.trustEnvironment = trustEnvironment
-        self.authorizationClientID = authorizationClientID
-        self.authorizationRedirectURI = authorizationRedirectURI
+        self.clientConfiguration = clientConfiguration
         self.now = now
     }
 
@@ -643,6 +678,7 @@ public actor OpenID4VCW3CBackend {
                 preparedPIDPresentations[id] = nil
                 authorizationCodeVerifiers[id] = nil
                 authorizationStates[id] = nil
+                authorizationServerContexts[id] = nil
                 throw OpenID4VCBackendError.invalidPresentationChallenge(reason: "authorization session expired")
             }
             return context.activeInteraction
@@ -660,11 +696,17 @@ public actor OpenID4VCW3CBackend {
         presentationChallengeTasks[id] = task
         do {
             let challenge = try await task.value
+            let expiresAt: Date
+            if case let .web(web) = challenge, let expiresIn = web.expiresIn {
+                expiresAt = now().addingTimeInterval(TimeInterval(min(expiresIn, 300)))
+            } else {
+                expiresAt = now().addingTimeInterval(300)
+            }
             let context = InteractiveAuthorizationContext(
                 generationID: UUID(),
                 authorizationChallengeEndpoint: challenge.authorizationChallengeEndpoint,
                 activeInteraction: challenge,
-                expiresAt: now().addingTimeInterval(300)
+                expiresAt: expiresAt
             )
             interactiveAuthorizationContexts[id] = context
             if case let .presentation(request) = challenge { presentationChallenges[id] = request }
@@ -673,6 +715,7 @@ public actor OpenID4VCW3CBackend {
         } catch {
             presentationChallengeTasks[id] = nil
             authorizationCodeVerifiers[id] = nil
+            authorizationServerContexts[id] = nil
             throw error
         }
     }
@@ -716,6 +759,10 @@ public actor OpenID4VCW3CBackend {
                 reason: "authorization server metadata issuer did not match the selected server"
             )
         }
+        authorizationServerContexts[id] = AuthorizationServerContext(
+            server: authorizationServer,
+            metadata: metadata
+        )
         if !usesDraftInteraction,
            let publishedEndpoint = metadata.authorizationChallengeEndpoint,
            let url = URL(string: publishedEndpoint),
@@ -813,8 +860,28 @@ public actor OpenID4VCW3CBackend {
             throw OpenID4VCBackendError.invalidPresentationChallenge(reason: "successful response contained an error")
         }
         if (response.interactionTypeRequired ?? response.type) == "urn:openid:dcp:ia:auth_via_web" {
-            guard interactionTypes.contains("urn:openid:dcp:ia:auth_via_web"),
-                  let session = response.authSession, !session.isEmpty,
+            guard interactionTypes.contains("urn:openid:dcp:ia:auth_via_web") else {
+                throw OpenID4VCBackendError.invalidPresentationChallenge(reason: "web interaction was malformed")
+            }
+            if let requestURI = response.requestURI, !requestURI.isEmpty {
+                guard response.authSession == nil,
+                      let value = metadata.authorizationEndpoint,
+                      let authorizationEndpoint = URL(string: value),
+                      try Self.origin(of: authorizationEndpoint) == authorizationServerOrigin else {
+                    throw OpenID4VCBackendError.invalidPresentationChallenge(reason: "web interaction was malformed")
+                }
+                let authorizationURL = try authorizationRequestURL(
+                    endpoint: authorizationEndpoint,
+                    requestURI: requestURI
+                )
+                return .web(WebAuthorizationChallenge(
+                    id: id,
+                    authorizationURL: authorizationURL,
+                    authorizationChallengeEndpoint: endpoint,
+                    expiresIn: response.expiresIn
+                ))
+            }
+            guard let session = response.authSession, !session.isEmpty,
                   let value = response.authorizationURL,
                   let authorizationURL = URL(string: value),
                   authorizationURL.scheme?.lowercased() == "https", authorizationURL.host != nil else {
@@ -1024,14 +1091,15 @@ public actor OpenID4VCW3CBackend {
 
     public func pollWebAuthorization(id: UUID) async throws -> WebAuthorizationPollResult {
         guard let context = interactiveAuthorizationContexts[id], context.expiresAt > now(),
-              case let .web(challenge) = context.activeInteraction else {
+              case let .web(challenge) = context.activeInteraction,
+              let authSession = challenge.authSession else {
             throw OpenID4VCBackendError.unknownTransaction
         }
         let response = try await transport.send(
             url: context.authorizationChallengeEndpoint,
             method: "POST",
             headers: ["Content-Type": "application/x-www-form-urlencoded", "Accept": "application/json"],
-            body: form(["auth_session": challenge.authSession])
+            body: form(["auth_session": authSession])
         )
         guard response.statusCode == 200 || response.statusCode == 400 else {
             throw OpenID4VCBackendError.authorizationFailed
@@ -1062,13 +1130,95 @@ public actor OpenID4VCW3CBackend {
         return .authorizationCode(code)
     }
 
+    public func continueWebAuthorization(
+        id: UUID,
+        authSession: String
+    ) async throws -> InteractiveAuthorizationResult {
+        guard let context = interactiveAuthorizationContexts[id], context.expiresAt > now(),
+              case let .web(challenge) = context.activeInteraction,
+              challenge.authSession == nil,
+              !authSession.isEmpty else {
+            throw OpenID4VCBackendError.unknownTransaction
+        }
+        let response = try await transport.send(
+            url: context.authorizationChallengeEndpoint,
+            method: "POST",
+            headers: ["Content-Type": "application/x-www-form-urlencoded", "Accept": "application/json"],
+            body: form([
+                "auth_session": authSession,
+                "code_verifier": authorizationCodeVerifiers[id],
+            ])
+        )
+        guard response.statusCode == 200 || response.statusCode == 403 else {
+            throw OpenID4VCBackendError.authorizationFailed
+        }
+        let result = try Self.decode(
+            InteractiveAuthorizationResponse.self,
+            from: response.body,
+            stage: "web authorization continuation"
+        )
+        if response.statusCode == 403,
+           result.error == "insufficient_authorization",
+           let transaction = transactions[id] {
+            let next = try await webAuthorizationChallenge(
+                id: id,
+                response: result,
+                authorizationChallengeEndpoint: context.authorizationChallengeEndpoint,
+                transaction: transaction
+            )
+            interactiveAuthorizationContexts[id] = InteractiveAuthorizationContext(
+                generationID: context.generationID,
+                authorizationChallengeEndpoint: context.authorizationChallengeEndpoint,
+                activeInteraction: .web(next),
+                expiresAt: next.expiresIn.map {
+                    min(context.expiresAt, now().addingTimeInterval(TimeInterval(max(0, $0))))
+                } ?? context.expiresAt
+            )
+            return .interaction(.web(next))
+        }
+        guard response.statusCode == 200,
+              result.error == nil,
+              let code = result.authorizationCode ?? result.code,
+              !code.isEmpty else {
+            throw OpenID4VCBackendError.invalidResponse
+        }
+        authorizationCodes[id] = code
+        presentationChallenges[id] = nil
+        interactiveAuthorizationContexts[id] = nil
+        authorizationServerContexts[id] = nil
+        preparedPIDPresentations[id] = nil
+        return .authorizationCode(code)
+    }
+
     private func webAuthorizationChallenge(
         id: UUID,
         response: InteractiveAuthorizationResponse,
-        authorizationChallengeEndpoint: URL
-    ) throws -> WebAuthorizationChallenge {
-        guard response.interactionTypeRequired == "urn:openid:dcp:ia:auth_via_web",
-              let authSession = response.authSession, !authSession.isEmpty,
+        authorizationChallengeEndpoint: URL,
+        transaction: Transaction
+    ) async throws -> WebAuthorizationChallenge {
+        guard response.interactionTypeRequired == "urn:openid:dcp:ia:auth_via_web" else {
+            throw OpenID4VCBackendError.invalidPresentationResponse
+        }
+
+        if let requestURI = response.requestURI, !requestURI.isEmpty {
+            guard response.authSession == nil else {
+                throw OpenID4VCBackendError.invalidPresentationResponse
+            }
+            guard let authorizationServerContext = authorizationServerContexts[id],
+                  let value = authorizationServerContext.metadata.authorizationEndpoint,
+                  let endpoint = URL(string: value),
+                  try Self.origin(of: endpoint) == Self.origin(of: authorizationServerContext.server) else {
+                throw OpenID4VCBackendError.invalidPresentationResponse
+            }
+            let authorizationURL = try authorizationRequestURL(endpoint: endpoint, requestURI: requestURI)
+            return WebAuthorizationChallenge(
+                id: id, authorizationURL: authorizationURL,
+                authorizationChallengeEndpoint: authorizationChallengeEndpoint,
+                expiresIn: response.expiresIn
+            )
+        }
+
+        guard let authSession = response.authSession, !authSession.isEmpty,
               let value = response.authorizationURL,
               let authorizationURL = URL(string: value),
               authorizationURL.scheme?.lowercased() == "https", authorizationURL.host != nil else {
@@ -1380,6 +1530,7 @@ public actor OpenID4VCW3CBackend {
             fields: ["vp_token": token, "state": challenge.state]
         )
         interactiveAuthorizationContexts[id] = nil
+        authorizationServerContexts[id] = nil
         transactionHolderIdentities[id] = nil
         return redirectURI
     }
@@ -1508,15 +1659,18 @@ public actor OpenID4VCW3CBackend {
             throw OpenID4VCBackendError.authorizationFailed
         }
         if result.error == "insufficient_authorization" {
-            let next = try webAuthorizationChallenge(
+            let next = try await webAuthorizationChallenge(
                 id: id, response: result,
-                authorizationChallengeEndpoint: context.authorizationChallengeEndpoint
+                authorizationChallengeEndpoint: context.authorizationChallengeEndpoint,
+                transaction: transaction
             )
             interactiveAuthorizationContexts[id] = InteractiveAuthorizationContext(
                 generationID: context.generationID,
                 authorizationChallengeEndpoint: context.authorizationChallengeEndpoint,
                 activeInteraction: .web(next),
-                expiresAt: context.expiresAt
+                expiresAt: next.expiresIn.map {
+                    min(context.expiresAt, now().addingTimeInterval(TimeInterval(max(0, $0))))
+                } ?? context.expiresAt
             )
             presentationChallenges[id] = nil
             return .interaction(.web(next))
@@ -1532,13 +1686,34 @@ public actor OpenID4VCW3CBackend {
     }
 
     public func acceptAuthorizationCode(id: UUID, code: String) throws {
-        guard transactions[id] != nil, !code.isEmpty else {
+        guard transactions[id] != nil,
+              let context = interactiveAuthorizationContexts[id],
+              context.expiresAt > now(),
+              case .web = context.activeInteraction,
+              !code.isEmpty else {
             throw OpenID4VCBackendError.unknownTransaction
         }
         authorizationCodes[id] = code
         presentationChallenges[id] = nil
         interactiveAuthorizationContexts[id] = nil
         preparedPIDPresentations[id] = nil
+    }
+
+    private func authorizationRequestURL(endpoint: URL, requestURI: String) throws -> URL {
+        guard !requestURI.isEmpty,
+              var components = URLComponents(url: endpoint, resolvingAgainstBaseURL: false) else {
+            throw OpenID4VCBackendError.invalidPresentationResponse
+        }
+        let reserved = Set(["client_id", "request_uri"])
+        guard !(components.queryItems ?? []).contains(where: { reserved.contains($0.name) }) else {
+            throw OpenID4VCBackendError.invalidPresentationResponse
+        }
+        components.queryItems = (components.queryItems ?? []) + [
+            URLQueryItem(name: "client_id", value: clientConfiguration.clientID),
+            URLQueryItem(name: "request_uri", value: requestURI),
+        ]
+        guard let url = components.url else { throw OpenID4VCBackendError.invalidPresentationResponse }
+        return url
     }
 
     public func issue(
@@ -1584,8 +1759,8 @@ public actor OpenID4VCW3CBackend {
                 "grant_type": "authorization_code",
                 "code": code,
                 "code_verifier": authorizationCodeVerifiers[id],
-                "client_id": authorizationClientID,
-                "redirect_uri": authorizationRedirectURI.absoluteString,
+                "client_id": clientConfiguration.clientID,
+                "redirect_uri": clientConfiguration.redirectURI.absoluteString,
             ]
         }
         let issuerMetadata = transaction.issuerMetadata
@@ -2320,6 +2495,7 @@ public actor OpenID4VCW3CBackend {
         }
         stagedCredentials[id] = nil
         transactions[id] = nil
+        authorizationServerContexts[id] = nil
         authorizationCodes[id] = nil
         authorizationCodeVerifiers[id] = nil
         authorizationStates[id] = nil
@@ -2907,6 +3083,7 @@ public actor OpenID4VCW3CBackend {
     public func cancel(id: UUID) {
         stagedCredentials[id] = nil
         transactions[id] = nil
+        authorizationServerContexts[id] = nil
         authorizationCodes[id] = nil
         authorizationCodeVerifiers[id] = nil
         authorizationStates[id] = nil
@@ -2984,8 +3161,8 @@ public actor OpenID4VCW3CBackend {
             "issuer_state": issuerState,
             "interaction_types_supported": interactionTypes.joined(separator: ","),
             "response_type": "code",
-            "client_id": authorizationClientID,
-            "redirect_uri": authorizationRedirectURI.absoluteString,
+            "client_id": clientConfiguration.clientID,
+            "redirect_uri": clientConfiguration.redirectURI.absoluteString,
             "state": state,
             "code_challenge": challenge,
             "code_challenge_method": "S256",
@@ -3271,6 +3448,8 @@ private struct PresentationChallengeResponse: Decodable {
     let error: String?
     let authSession: String?
     let authorizationURL: String?
+    let requestURI: String?
+    let expiresIn: Int?
     let interactionTypeRequired: String?
     let type: String?
     let openid4vpRequest: PresentationRequest?
@@ -3278,6 +3457,8 @@ private struct PresentationChallengeResponse: Decodable {
         case error
         case authSession = "auth_session"
         case authorizationURL = "authorization_url"
+        case requestURI = "request_uri"
+        case expiresIn = "expires_in"
         case interactionTypeRequired = "interaction_type_required"
         case type
         case openid4vpRequest = "openid4vp_request"
@@ -3390,6 +3571,8 @@ private struct InteractiveAuthorizationResponse: Decodable {
     let interactionTypeRequired: String?
     let authSession: String?
     let authorizationURL: String?
+    let requestURI: String?
+    let expiresIn: Int?
     enum CodingKeys: String, CodingKey {
         case authorizationCode = "authorization_code"
         case code
@@ -3398,6 +3581,8 @@ private struct InteractiveAuthorizationResponse: Decodable {
         case interactionTypeRequired = "interaction_type_required"
         case authSession = "auth_session"
         case authorizationURL = "authorization_url"
+        case requestURI = "request_uri"
+        case expiresIn = "expires_in"
     }
 }
 

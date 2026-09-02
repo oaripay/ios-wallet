@@ -4,7 +4,7 @@
 <dict>
 	<key>com.apple.developer.associated-domains</key>
 	<array>
-		<string>applinks:oari.io</string>
+		<string>applinks:wallet.ios.oari.io</string>
 	</array>
 </dict>
 </plist>

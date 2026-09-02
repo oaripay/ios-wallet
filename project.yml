@@ -83,6 +83,9 @@ targets:
           - CFBundleURLName: io.oari.wallet.openid4vci
             CFBundleURLSchemes:
               - openid-credential-offer
+          - CFBundleURLName: io.oari.wallet.authorization
+            CFBundleURLSchemes:
+              - oari-wallet
           - CFBundleURLName: io.oari.wallet.eudi
             CFBundleURLSchemes:
               - haip-vci

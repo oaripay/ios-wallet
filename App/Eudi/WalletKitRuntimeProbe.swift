@@ -27,7 +27,7 @@ enum WalletKitRuntimeProbe {
         )
         let configuration = try EudiOperationalConfiguration(
             clientID: "oari-wallet-tests",
-            authorizationRedirectURI: URL(string: "https://oari.io/oauth/callback")!,
+            authorizationRedirectURI: URL(string: "https://wallet.ios.oari.io/oauth/callback")!,
             attestationProvider: RuntimeProbeAttestationProvider(),
             auditRepository: RuntimeProbeAuditRepository(),
             auditPolicy: .development,
@@ -67,7 +67,7 @@ enum WalletKitRuntimeProbe {
         )
         let configuration = try EudiOperationalConfiguration(
             clientID: "oari-wallet-tests",
-            authorizationRedirectURI: URL(string: "https://oari.io/oauth/callback")!,
+            authorizationRedirectURI: URL(string: "https://wallet.ios.oari.io/oauth/callback")!,
             attestationProvider: RuntimeProbeAttestationProvider(),
             auditRepository: RuntimeProbeAuditRepository(),
             auditPolicy: .development,
@@ -99,7 +99,7 @@ enum WalletKitRuntimeProbe {
         let redirectTransport = RuntimeProbeNetworkTransport(statusCode: 302)
         let redirectConfiguration = try EudiOperationalConfiguration(
             clientID: "oari-wallet-tests",
-            authorizationRedirectURI: URL(string: "https://oari.io/oauth/callback")!,
+            authorizationRedirectURI: URL(string: "https://wallet.ios.oari.io/oauth/callback")!,
             attestationProvider: RuntimeProbeAttestationProvider(),
             auditRepository: RuntimeProbeAuditRepository(),
             auditPolicy: .development,
@@ -171,7 +171,7 @@ enum WalletKitRuntimeProbe {
         ))
         let configuration = try EudiOperationalConfiguration(
             clientID: "oari-wallet-tests",
-            authorizationRedirectURI: URL(string: "https://oari.io/oauth/callback")!,
+            authorizationRedirectURI: URL(string: "https://wallet.ios.oari.io/oauth/callback")!,
             attestationProvider: RuntimeProbeAttestationProvider(),
             auditRepository: audit,
             auditPolicy: .development,

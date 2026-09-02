@@ -6,6 +6,48 @@ import Testing
 import TrustDomain
 import WalletDomain
 
+private extension OpenID4VCW3CBackend {
+    init(
+        transport: any OpenID4VCHTTPTransport,
+        trustEvaluator: any CredentialIssuerServiceTrustEvaluating,
+        credentialSignerTrustEvaluator: (any CredentialSignerTrustEvaluating)? = nil,
+        keyProvider: any KeyProvider,
+        credentialStore: any EbsiCredentialStore,
+        credentialValidator: any W3CCredentialValidating,
+        profile: EbsiCredentialProfile,
+        additionalProfiles: [EbsiCredentialProfile] = [],
+        clientSecurity: (any OID4VCIClientSecurity)? = nil,
+        transportProfileRegistry: OID4VCITransportProfileRegistry = .finalOnly,
+        holderIdentityProvider: (any W3CHolderIdentityProviding)? = nil,
+        presentationRequestValidator: (any OpenID4VPRequestObjectValidating)? = nil,
+        presentationReplayProtection: any OpenID4VPReplayProtecting = InMemoryOpenID4VPReplayStore(),
+        trustEnvironment: EbsiTrustEnvironment = .development,
+        now: @escaping @Sendable () -> Date = Date.init
+    ) {
+        self.init(
+            transport: transport,
+            trustEvaluator: trustEvaluator,
+            credentialSignerTrustEvaluator: credentialSignerTrustEvaluator,
+            keyProvider: keyProvider,
+            credentialStore: credentialStore,
+            credentialValidator: credentialValidator,
+            profile: profile,
+            clientConfiguration: try! OpenID4VCClientConfiguration(
+                clientID: "generic-wallet-client",
+                redirectURI: URL(string: "https://wallet.example/callback")!
+            ),
+            additionalProfiles: additionalProfiles,
+            clientSecurity: clientSecurity,
+            transportProfileRegistry: transportProfileRegistry,
+            holderIdentityProvider: holderIdentityProvider,
+            presentationRequestValidator: presentationRequestValidator,
+            presentationReplayProtection: presentationReplayProtection,
+            trustEnvironment: trustEnvironment,
+            now: now
+        )
+    }
+}
+
 private final class DeferredTestClock: @unchecked Sendable {
     private let lock = NSLock()
     private var date: Date
@@ -26,6 +68,30 @@ private final class DeferredTestClock: @unchecked Sendable {
 }
 
 struct OpenID4VCW3CBackendTests {
+    @Test("Wallet redirect configuration accepts the registered HTTPS URI")
+    func walletRedirectConfiguration() throws {
+        let configuration = try OpenID4VCClientConfiguration(
+            clientID: "io.oari.wallet",
+            redirectURI: URL(string: "https://wallet.ios.oari.io/oauth/callback")!
+        )
+        #expect(configuration.redirectURI.absoluteString == "https://wallet.ios.oari.io/oauth/callback")
+    }
+
+    @Test("Unsafe native wallet redirects are rejected", arguments: [
+        "http://wallet.example/callback",
+        "file://authorization",
+        "https://wallet.ios.oari.io/oauth/callback?code=injected",
+        "https://wallet.ios.oari.io/oauth/callback#fragment",
+    ])
+    func unsafeNativeWalletRedirectConfiguration(value: String) {
+        #expect(throws: OpenID4VCBackendError.unsafeEndpoint) {
+            try OpenID4VCClientConfiguration(
+                clientID: "io.oari.wallet",
+                redirectURI: URL(string: value)!
+            )
+        }
+    }
+
     @Test("Final response is persisted and restored before local credential commit")
     func finalDeferredIssuance() async throws {
         let transport = FixtureOpenID4VCTransport(deferredInterval: 1)
@@ -936,8 +1002,8 @@ struct OpenID4VCW3CBackendTests {
             URLComponents(string: "?\(initialBody)")?.queryItems
         ).compactMap { item in item.value.map { (item.name, $0) } })
         #expect(initialFields["interaction_types_supported"] == "urn:openid:dcp:ia:openid4vp_presentation,urn:openid:dcp:ia:auth_via_web")
-        #expect(initialFields["client_id"] == "oari-development-wallet")
-        #expect(initialFields["redirect_uri"] == "https://oari.io/oauth/callback")
+        #expect(initialFields["client_id"] == "generic-wallet-client")
+        #expect(initialFields["redirect_uri"] == "https://wallet.ios.oari.io/oauth/callback")
         #expect(initialFields["state"] == nil)
         #expect(initialFields["auth_session"] == nil)
         #expect(try await backend.submitPresentation(
@@ -964,7 +1030,7 @@ struct OpenID4VCW3CBackendTests {
         #expect(try await backend.issue(id: offer.id, allowUntrusted: false, transactionCode: nil).count == 1)
     }
 
-    @Test("Interactive authorization continues from VP through web pending to code")
+    @Test("Interactive authorization continues from VP through request_uri web authorization")
     func authorizationPresentationThenWeb() async throws {
         let transport = VPThenWebTransport()
         let backend = OpenID4VCW3CBackend(
@@ -989,14 +1055,45 @@ struct OpenID4VCW3CBackendTests {
             Issue.record("Expected web interaction")
             return
         }
-        #expect(web.authorizationURL == URL(string: "https://login.example/session"))
+        #expect(web.authorizationURL == URL(string: "https://issuer.example/browser-authorize?client_id=generic-wallet-client&request_uri=urn:ietf:params:oauth:request_uri:web-session-1"))
         #expect(web.authorizationChallengeEndpoint == URL(string: "https://issuer.example/authorize-challenge"))
-        #expect(try await backend.pollWebAuthorization(id: offer.id) == .pending)
-        #expect(try await backend.pollWebAuthorization(id: offer.id) == .authorizationCode("web-code"))
-        try await backend.acceptAuthorizationCode(id: offer.id, code: "web-code")
+        #expect(web.authSession == nil)
+        #expect(web.expiresIn == 60)
 
-        let polls = await transport.pollBodies
-        #expect(polls == ["auth_session=web-session-1", "auth_session=web-session-2"])
+        #expect(try await backend.continueWebAuthorization(
+            id: offer.id,
+            authSession: "continued-session"
+        ) == .authorizationCode("web-code"))
+        let continuationBody = try #require(await transport.continuationBody)
+        #expect(continuationBody.contains("auth_session=continued-session"))
+        #expect(continuationBody.contains("code_verifier="))
+        #expect(await transport.authorizationMetadataRequestCount == 1)
+
+        await #expect(throws: OpenID4VCBackendError.unknownTransaction) {
+            try await backend.acceptAuthorizationCode(id: offer.id, code: "replayed-code")
+        }
+    }
+
+    @Test("Interactive authorization can start with request_uri web authorization")
+    func authorizationStartsWithWeb() async throws {
+        let transport = VPThenWebTransport(initialWeb: true)
+        let backend = OpenID4VCW3CBackend(
+            transport: transport,
+            trustEvaluator: TrustedIssuerEvaluator(),
+            keyProvider: FixtureKeyProvider(),
+            credentialStore: FixtureCredentialStore(),
+            credentialValidator: FixtureCredentialValidator(),
+            profile: try .vcdm2JWTVC()
+        )
+        let offer = try await Self.authorizationOffer(backend)
+        let initial = try await backend.beginPresentationRequired(id: offer.id, allowUntrusted: false)
+        guard case let .web(web) = initial else {
+            Issue.record("Expected web interaction")
+            return
+        }
+        #expect(web.authorizationURL == URL(string: "https://issuer.example/browser-authorize?client_id=generic-wallet-client&request_uri=urn:ietf:params:oauth:request_uri:web-session-1"))
+        #expect(web.authSession == nil)
+        #expect(web.expiresIn == 60)
     }
 
     @Test("Interactive authorization rejects a mismatched response state")
@@ -2001,7 +2098,13 @@ private actor DraftIARFallbackTransport: OpenID4VCHTTPTransport {
 }
 
 private actor VPThenWebTransport: OpenID4VCHTTPTransport {
-    private(set) var pollBodies: [String] = []
+    private let initialWeb: Bool
+    private(set) var continuationBody: String?
+    private(set) var authorizationMetadataRequestCount = 0
+
+    init(initialWeb: Bool = false) {
+        self.initialWeb = initialWeb
+    }
 
     func send(url: URL, method: String, headers: [String: String], body: Data?) async throws -> OpenID4VCHTTPResponse {
         let form = String(decoding: body ?? Data(), as: UTF8.self)
@@ -2009,19 +2112,19 @@ private actor VPThenWebTransport: OpenID4VCHTTPTransport {
         case "/.well-known/openid-credential-issuer":
             return .init(statusCode: 200, body: Data(#"{"credential_issuer":"https://issuer.example","credential_endpoint":"https://issuer.example/credential","authorization_servers":["https://issuer.example"],"credential_configurations_supported":{"example-vcdm2-jwt-vc":{"format":"application/vc+jwt"}}}"#.utf8))
         case "/.well-known/oauth-authorization-server":
+            authorizationMetadataRequestCount += 1
             return .init(statusCode: 200, body: Data(#"{"authorization_endpoint":"https://issuer.example/browser-authorize","authorization_challenge_endpoint":"https://issuer.example/authorize-challenge","token_endpoint":"https://issuer.example/token"}"#.utf8))
+        case "/authorize-challenge" where form.contains("issuer_state=") && initialWeb:
+            return .init(statusCode: 403, body: Data(#"{"error":"insufficient_authorization","interaction_type_required":"urn:openid:dcp:ia:auth_via_web","request_uri":"urn:ietf:params:oauth:request_uri:web-session-1","expires_in":60}"#.utf8))
         case "/authorize-challenge" where form.contains("issuer_state="):
             let query = #"{"id":"pid","format":"dc+sd-jwt","meta":{"vct_values":["urn:example:pid"]},"claims":[{"path":["given_name"]}]}"#
             return .init(statusCode: 403, body: Data("""
             {"error":"insufficient_authorization","interaction_type_required":"urn:openid:dcp:ia:openid4vp_presentation","auth_session":"vp-session","openid4vp_request":{"response_type":"vp_token","response_mode":"ia_post","nonce":"nonce","state":"state","dcql_query":{"credentials":[\(query)]}}}
             """.utf8))
         case "/authorize-challenge" where form.contains("openid4vp_response="):
-            return .init(statusCode: 403, body: Data(#"{"error":"insufficient_authorization","interaction_type_required":"urn:openid:dcp:ia:auth_via_web","auth_session":"web-session-1","authorization_url":"https://login.example/session"}"#.utf8))
-        case "/authorize-challenge":
-            pollBodies.append(form)
-            if pollBodies.count == 1 {
-                return .init(statusCode: 400, body: Data(#"{"error":"authorization_pending","auth_session":"web-session-2"}"#.utf8))
-            }
+            return .init(statusCode: 403, body: Data(#"{"error":"insufficient_authorization","interaction_type_required":"urn:openid:dcp:ia:auth_via_web","request_uri":"urn:ietf:params:oauth:request_uri:web-session-1","expires_in":60}"#.utf8))
+        case "/authorize-challenge" where form.contains("auth_session=continued-session"):
+            continuationBody = form
             return .init(statusCode: 200, body: Data(#"{"authorization_code":"web-code"}"#.utf8))
         default:
             return .init(statusCode: 404, body: Data())
@@ -2502,9 +2605,9 @@ private actor FixtureCredentialValidator: W3CCredentialValidating {
         at date: Date
     ) async throws -> String {
         calls += 1
-        #expect(!expectedIssuer.isEmpty)
+        #expect(expectedIssuer?.isEmpty != true)
         #expect(!expectedHolderDID.isEmpty)
-        return signedIssuer ?? expectedIssuer
+        return signedIssuer ?? expectedIssuer ?? "https://issuer.example"
     }
 }
 

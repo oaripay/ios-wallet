@@ -57,6 +57,7 @@ protocol OpenID4VCOperating: Sendable {
         userAccepted: Bool
     ) async throws -> OpenID4VCInteractionCompletion
     func completeAuthorization(id: UUID, code: String) async throws -> OpenID4VCInteractionCompletion
+    func continueWebAuthorization(id: UUID, authSession: String) async throws -> OpenID4VCInteractionCompletion
     func pollWebAuthorization(id: UUID) async throws -> WebAuthorizationPollResult
     func deleteCredential(
         backendID: UUID,
@@ -580,6 +581,21 @@ actor LiveOpenID4VCService: OpenID4VCOperating {
         try await backend.acceptAuthorizationCode(id: id, code: code)
         authorizationRequired.remove(id)
         return try await continueInteraction(id: id, allowUntrusted: true, transactionCode: nil)
+    }
+
+    func continueWebAuthorization(
+        id: UUID,
+        authSession: String
+    ) async throws -> OpenID4VCInteractionCompletion {
+        switch try await backend.continueWebAuthorization(id: id, authSession: authSession) {
+        case let .interaction(.web(challenge)):
+            return .webAuthorizationRequired(challenge)
+        case let .interaction(.presentation(request)):
+            return .presentationRequired(request)
+        case .authorizationCode:
+            authorizationRequired.remove(id)
+            return try await continueInteraction(id: id, allowUntrusted: true, transactionCode: nil)
+        }
     }
 
     func pollWebAuthorization(id: UUID) async throws -> WebAuthorizationPollResult {

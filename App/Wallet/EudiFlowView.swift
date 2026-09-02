@@ -13,15 +13,6 @@ struct EudiFlowView: View {
             .navigationTitle("Wallet request")
             .navigationBarTitleDisplayMode(.inline)
         }
-        .sheet(isPresented: Binding(
-            get: { model.webAuthorizationURL != nil },
-            set: { if !$0 { model.cancelWebAuthorization() } }
-        )) {
-            if let url = model.webAuthorizationURL {
-                InAppBrowserView(url: url)
-                    .ignoresSafeArea()
-            }
-        }
     }
 
     @ViewBuilder

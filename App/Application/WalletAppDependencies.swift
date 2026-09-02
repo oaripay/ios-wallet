@@ -181,6 +181,10 @@ struct WalletAppDependencies: Sendable {
                 resolver: resolver, transport: transport, allowsDIDIssuerDelegation: true
             ),
             profile: try .vcdm2JWTVC(),
+            clientConfiguration: try OpenID4VCClientConfiguration(
+                clientID: W3CBackendComposition.authorizationClientID,
+                redirectURI: W3CBackendComposition.authorizationRedirectURI
+            ),
             additionalProfiles: try W3CBackendComposition.additionalProfiles(),
             clientSecurity: DefaultOID4VCIClientSecurity(
                 keyProvider: DeviceBoundKeyProvider(applicationTagPrefix: "io.oari.wallet.oid4vci.security")
@@ -191,9 +195,7 @@ struct WalletAppDependencies: Sendable {
             ),
             presentationRequestValidator: NativeOpenID4VPRequestObjectValidator(resolver: resolver),
             presentationReplayProtection: replayProtection,
-            trustEnvironment: composition.environmentPolicy == .production ? .production : .development,
-            authorizationClientID: W3CBackendComposition.authorizationClientID,
-            authorizationRedirectURI: W3CBackendComposition.authorizationRedirectURI
+            trustEnvironment: composition.environmentPolicy == .production ? .production : .development
         )
         return LiveOpenID4VCService(
             backend: backend,

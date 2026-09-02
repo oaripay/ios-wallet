@@ -77,6 +77,14 @@ For final Interactive Authorization, the initial challenge request carries
 accepted with the standard `authorization_code` property and does not require an
 OAuth redirect `state` value.
 
+For `auth_via_web`, the wallet opens the Authorization Server's `request_uri`
+request in the system Safari context. The HTTPS callback either completes the
+flow with `code` or continues it with the latest `auth_session`.
+Authorization Server endpoints are discovered from issuer metadata; the wallet
+client identifier and registered native redirect URI are supplied separately by
+app-level client registration configuration. The iOS app callback is
+`oari-wallet://authorization`.
+
 Unknown formats do not fall through as valid. Every enabled profile should have
 positive and negative interoperability coverage.
 

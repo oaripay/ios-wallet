@@ -133,7 +133,7 @@ struct WalletAppModelTests {
         #expect(production.approvedProductionEndpoints[production.endpoint.id] == production.endpoint)
         #expect(production.transportProfileRegistry == .productionInteroperability)
         #expect(W3CBackendComposition.authorizationClientID == "io.oari.wallet")
-        #expect(W3CBackendComposition.authorizationRedirectURI.absoluteString == "https://oari.io/oauth/callback")
+        #expect(W3CBackendComposition.authorizationRedirectURI.absoluteString == "https://wallet.ios.oari.io/oauth/callback")
         #expect(try W3CBackendComposition.additionalProfiles().map(\.id) == [
             "ebsi-vcdm11-jwt-vc",
             "ietf-dc-sd-jwt-vc",
@@ -1298,6 +1298,12 @@ private actor FixtureOpenID4VCWallet: OpenID4VCOperating {
     func completeAuthorization(id: UUID, code: String) async throws -> OpenID4VCInteractionCompletion {
         completedAuthorizationCodes.append(code)
         return .completed("Authorization completed")
+    }
+    func continueWebAuthorization(
+        id: UUID,
+        authSession: String
+    ) async throws -> OpenID4VCInteractionCompletion {
+        .completed("Authorization completed")
     }
     func pollWebAuthorization(id: UUID) async throws -> WebAuthorizationPollResult {
         didPollWebAuthorization = true
