@@ -407,7 +407,7 @@ private struct TIRAttributeEnvelope: Decodable {
     let attribute: Attribute
 }
 
-public struct NativeW3CCredentialValidator: W3CCredentialValidating, Sendable {
+public struct NativeW3CCredentialValidator: EBSIAvailabilityAwareCredentialValidating, Sendable {
     private let resolver: any DIDResolver
     private let transport: (any OpenID4VCHTTPTransport)?
     private let allowsDIDIssuerDelegation: Bool
@@ -429,6 +429,25 @@ public struct NativeW3CCredentialValidator: W3CCredentialValidating, Sendable {
         expectedHolderDID: String,
         at date: Date
     ) async throws -> String {
+        switch try await validateAllowingUnavailableEBSIDID(
+            rawCredential: rawCredential,
+            profile: profile,
+            expectedIssuer: expectedIssuer,
+            expectedHolderDID: expectedHolderDID,
+            at: date
+        ) {
+        case let .verified(issuer): return issuer
+        case .ebsiDIDResolutionUnavailable: throw EbsiCredentialError.issuerDIDUnresolved
+        }
+    }
+
+    public func validateAllowingUnavailableEBSIDID(
+        rawCredential: Data,
+        profile: EbsiCredentialProfile,
+        expectedIssuer: String? = nil,
+        expectedHolderDID: String,
+        at date: Date
+    ) async throws -> W3CCredentialValidationOutcome {
         let compact = String(decoding: rawCredential, as: UTF8.self)
         if profile.representation == .dcSdJwt || profile.representation == .vcdm2SdJwt {
             let payload = try EbsiCredentialInspector().inspectSDJWT(
@@ -437,7 +456,12 @@ public struct NativeW3CCredentialValidator: W3CCredentialValidating, Sendable {
             )
             let issuer = try Self.issuer(fromSDJWT: payload)
             try validateIssuerBinding(signedIssuer: issuer, expectedIssuer: expectedIssuer)
-            let methods = try await verificationMethods(for: issuer)
+            let methods: [EbsiVerificationMethod]
+            do {
+                methods = try await verificationMethods(for: issuer)
+            } catch EbsiCredentialError.issuerDIDUnresolved where issuer.hasPrefix("did:ebsi:") {
+                return .ebsiDIDResolutionUnavailable(issuer: issuer)
+            }
             do {
                 _ = try EbsiJWSVerifier().verify(
                     compactJWS: String(compact.split(separator: "~").first!),
@@ -455,7 +479,7 @@ public struct NativeW3CCredentialValidator: W3CCredentialValidating, Sendable {
             } catch {
                 throw EbsiCredentialError.invalidSignature
             }
-            return issuer
+            return .verified(issuer: issuer)
         }
         let credential = try EbsiCredentialInspector().inspectCompactJWT(
             compact,
@@ -464,7 +488,15 @@ public struct NativeW3CCredentialValidator: W3CCredentialValidating, Sendable {
         )
         let issuer = try Self.issuer(from: credential)
         try validateIssuerBinding(signedIssuer: issuer, expectedIssuer: expectedIssuer)
-        let methods = try await verificationMethods(for: issuer)
+        guard Self.subjectIDs(from: credential).contains(expectedHolderDID) else {
+            throw EbsiCredentialError.invalidHolderBinding
+        }
+        let methods: [EbsiVerificationMethod]
+        do {
+            methods = try await verificationMethods(for: issuer)
+        } catch EbsiCredentialError.issuerDIDUnresolved where issuer.hasPrefix("did:ebsi:") {
+            return .ebsiDIDResolutionUnavailable(issuer: issuer)
+        }
         do {
             _ = try EbsiJWSVerifier().verify(
                 compactJWS: compact,
@@ -483,10 +515,7 @@ public struct NativeW3CCredentialValidator: W3CCredentialValidating, Sendable {
             )
         } catch EbsiCredentialError.algorithmNotAllowed { throw EbsiCredentialError.algorithmNotAllowed }
         catch { throw EbsiCredentialError.invalidSignature }
-        guard Self.subjectIDs(from: credential).contains(expectedHolderDID) else {
-            throw EbsiCredentialError.invalidHolderBinding
-        }
-        return issuer
+        return .verified(issuer: issuer)
     }
 
     private func validateIssuerBinding(signedIssuer: String, expectedIssuer: String?) throws {

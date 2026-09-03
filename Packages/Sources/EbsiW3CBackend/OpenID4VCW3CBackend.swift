@@ -55,8 +55,9 @@ public protocol CredentialIssuerServiceTrustEvaluating: Sendable {
 
 /// Trust in an OpenID4VCI HTTPS service and trust in the entity that signed a
 /// returned credential are deliberately separate. Implementations of this
-/// protocol are only called with the signed issuer extracted after successful
-/// credential validation.
+/// protocol are called after validation, or after a structurally valid
+/// `did:ebsi` credential has entered explicit-consent state because its DID
+/// document was unavailable.
 public protocol CredentialSignerTrustEvaluating: Sendable {
     func evaluate(issuer: String, at date: Date) async -> TrustVerdict
 }
@@ -78,6 +79,32 @@ public protocol W3CCredentialValidating: Sendable {
         expectedHolderDID: String,
         at date: Date
     ) async throws -> String
+}
+
+public enum W3CCredentialValidationOutcome: Equatable, Sendable {
+    case verified(issuer: String)
+    case ebsiDIDResolutionUnavailable(issuer: String)
+
+    var issuer: String {
+        switch self {
+        case let .verified(issuer), let .ebsiDIDResolutionUnavailable(issuer): issuer
+        }
+    }
+
+    var isVerified: Bool {
+        if case .verified = self { return true }
+        return false
+    }
+}
+
+public protocol EBSIAvailabilityAwareCredentialValidating: W3CCredentialValidating {
+    func validateAllowingUnavailableEBSIDID(
+        rawCredential: Data,
+        profile: EbsiCredentialProfile,
+        expectedIssuer: String?,
+        expectedHolderDID: String,
+        at date: Date
+    ) async throws -> W3CCredentialValidationOutcome
 }
 
 /// Atomic replay protection for externally supplied OpenID4VP Request Objects.
@@ -315,6 +342,51 @@ public struct IssuedW3CCredential: Codable, Equatable, Sendable {
     public let hasStatusReference: Bool
     public let displayClaims: [CredentialDisplayClaim]
     public let display: CredentialDisplayMetadata?
+    /// Sensitive protocol state. Persist only in encrypted, access-controlled storage.
+    public let refreshContinuation: W3CCredentialRefreshContinuation?
+
+    fileprivate func withRefreshContinuation(_ continuation: W3CCredentialRefreshContinuation?) -> Self {
+        Self(
+            id: id, configurationID: configurationID, displayName: displayName,
+            issuerIdentifier: issuerIdentifier, profileID: profileID, representation: representation,
+            hasStatusReference: hasStatusReference, displayClaims: displayClaims, display: display,
+            refreshContinuation: continuation
+        )
+    }
+}
+
+/// Persistence-ready state for replacing one credential with an OAuth refresh grant.
+/// Holder proofs are deliberately never stored here and are freshly signed per request.
+public struct W3CCredentialRefreshContinuation: Codable, Equatable, Sendable {
+    public let credentialID: UUID
+    public let issuer: URL
+    public let authorizationServer: URL
+    public let tokenEndpoint: URL
+    public let credentialEndpoint: URL
+    public let nonceEndpoint: URL?
+    public let refreshToken: String
+    public let configurationID: String
+    public let credentialIdentifier: String?
+    public let expectation: DeferredCredentialExpectation
+    public let holderIdentity: W3CHolderIdentity
+    public let transportProfile: OID4VCITransportProfile
+    public let usesDPoP: Bool
+    public let requiresClientAttestation: Bool
+    public let requiresCredentialResponseEncryption: Bool
+    public let securityState: OID4VCIClientSecurityState?
+}
+
+public struct PendingW3CCredentialRefresh: Codable, Equatable, Sendable {
+    public let replacement: StoredEbsiCredential
+    public let result: IssuedW3CCredential
+    public let continuation: W3CCredentialRefreshContinuation
+    public let signerVerificationUnavailable: Bool?
+}
+
+public enum W3CCredentialRefreshOutcome: Equatable, Sendable {
+    case replaced(IssuedW3CCredential, W3CCredentialRefreshContinuation)
+    case signerTrustRequired(EbsiTrustWarning, PendingW3CCredentialRefresh)
+    case authorizationRequired(W3CCredentialRefreshContinuation)
 }
 
 public struct DeferredCredentialExpectation: Codable, Equatable, Sendable {
@@ -334,6 +406,7 @@ public struct DeferredCredentialExpectation: Codable, Equatable, Sendable {
 public struct DeferredStagedCredential: Codable, Equatable, Sendable {
     public let stored: StoredEbsiCredential
     public let issued: IssuedW3CCredential
+    public let signerVerificationUnavailable: Bool?
 }
 
 public struct DeferredCredentialNotification: Codable, Equatable, Sendable {
@@ -457,6 +530,7 @@ public enum OpenID4VCBackendError: Error, Equatable, Sendable {
     case deferredCredentialPending(DeferredW3CCredential)
     case deferredCredentialNotReady(nextPollAt: Date)
     case deferredCredentialSignerTrustWarning(EbsiTrustWarning, DeferredW3CCredential)
+    case refreshCredentialMismatch
 }
 
 public actor OpenID4VCW3CBackend {
@@ -476,6 +550,7 @@ public actor OpenID4VCW3CBackend {
     private struct StagedCredential: Sendable {
         let stored: StoredEbsiCredential
         let result: IssuedW3CCredential
+        let signerVerificationUnavailable: Bool
     }
 
     private struct StagedNotification: Sendable {
@@ -2080,6 +2155,46 @@ public actor OpenID4VCW3CBackend {
                 ))
             }
         }
+        // A refresh token belongs to the issuance grant, not an individual credential.
+        // Persist it per credential only when the grant issued exactly one credential;
+        // otherwise rotating one copy would invalidate every sibling continuation.
+        if deferredTransactions.isEmpty, staged.count == 1,
+           let refreshToken = token.refreshToken, !refreshToken.isEmpty {
+            staged = try staged.map { item in
+                guard let configuration = issuerMetadata.credentialConfigurations[item.result.configurationID],
+                      let credentialEndpoint = URL(string: issuerMetadata.credentialEndpoint) else {
+                    throw OpenID4VCBackendError.invalidResponse
+                }
+                let detail = transportContract.profile == .final
+                    ? finalAuthorizationDetails[item.result.configurationID]
+                    : draftAuthorizationDetails[item.result.configurationID]
+                let identifier = draftCredentialIdentifiers[item.result.configurationID]?.first
+                    ?? detail?.credentialIdentifiers?.first(where: { !$0.isEmpty })
+                let continuation = W3CCredentialRefreshContinuation(
+                    credentialID: item.stored.id, issuer: transaction.issuer,
+                    authorizationServer: authorizationServer, tokenEndpoint: tokenEndpoint,
+                    credentialEndpoint: credentialEndpoint,
+                    nonceEndpoint: issuerMetadata.nonceEndpoint.flatMap(URL.init(string:)),
+                    refreshToken: refreshToken, configurationID: item.result.configurationID,
+                    credentialIdentifier: identifier,
+                    expectation: DeferredCredentialExpectation(
+                        format: configuration.format,
+                        profileIDs: compatibleProfileIDs(format: configuration.format),
+                        displayName: configuration.display.name, display: item.result.display
+                    ),
+                    holderIdentity: holderIdentity, transportProfile: transportContract.profile,
+                    usesDPoP: transportContract.requiresDPoP,
+                    requiresClientAttestation: transportContract.requiresClientAttestation,
+                    requiresCredentialResponseEncryption: transportContract.requiresCredentialResponseEncryption,
+                    securityState: securityState
+                )
+                return StagedCredential(
+                    stored: item.stored,
+                    result: item.result.withRefreshContinuation(continuation),
+                    signerVerificationUnavailable: item.signerVerificationUnavailable
+                )
+            }
+        }
         let stagedIssuance = StagedIssuance(
             credentials: staged,
             notifications: pendingNotifications
@@ -2115,7 +2230,13 @@ public actor OpenID4VCW3CBackend {
                 securityState: securityState,
                 holderIdentity: holderIdentity,
                 expectations: expectations,
-                stagedCredentials: staged.map { DeferredStagedCredential(stored: $0.stored, issued: $0.result) },
+                stagedCredentials: staged.map {
+                    DeferredStagedCredential(
+                        stored: $0.stored,
+                        issued: $0.result,
+                        signerVerificationUnavailable: $0.signerVerificationUnavailable
+                    )
+                },
                 notifications: pendingNotifications.map {
                     DeferredCredentialNotification(endpoint: $0.endpoint, notificationID: $0.notificationID)
                 },
@@ -2131,7 +2252,7 @@ public actor OpenID4VCW3CBackend {
             cancel(id: id)
             return .deferred(continuation)
         }
-        let signerWarning = await credentialSignerWarning(for: staged.map(\.result.issuerIdentifier))
+        let signerWarning = await credentialSignerWarning(for: staged)
         if let signerWarning {
             // Raw credentials are already cryptographically validated. Retain
             // them only in this actor's transaction memory so Continue can
@@ -2142,15 +2263,218 @@ public actor OpenID4VCW3CBackend {
         return .issued(try await commitStagedCredentials(stagedIssuance, transactionID: id))
     }
 
+    public func refreshCredential(
+        _ continuation: W3CCredentialRefreshContinuation,
+        allowUntrustedSigner: Bool = false,
+        checkpoint: @Sendable (W3CCredentialRefreshContinuation) async throws -> Void = { _ in }
+    ) async throws -> W3CCredentialRefreshOutcome {
+        try validateRefreshState(continuation)
+        var tokenHeaders = ["Content-Type": "application/x-www-form-urlencoded"]
+        if continuation.usesDPoP || continuation.requiresClientAttestation {
+            guard let state = continuation.securityState, let clientSecurity else {
+                throw OpenID4VCBackendError.clientSecurityUnavailable
+            }
+            if continuation.usesDPoP {
+                tokenHeaders["DPoP"] = try await clientSecurity.dpopHeader(
+                    state: state, method: "POST", targetURI: continuation.tokenEndpoint, accessToken: nil
+                )
+            }
+            if continuation.requiresClientAttestation {
+                let headers = try await clientSecurity.clientAttestationHeaders(
+                    state: state, audience: continuation.tokenEndpoint
+                )
+                guard !headers.isEmpty else { throw OpenID4VCBackendError.clientSecurityUnavailable }
+                tokenHeaders.merge(headers, uniquingKeysWith: { _, new in new })
+            }
+        }
+        let tokenData: Data
+        do {
+            tokenData = try await successfulRequest(
+                continuation.tokenEndpoint, method: "POST", headers: tokenHeaders,
+                body: form([
+                    "grant_type": "refresh_token",
+                    "refresh_token": continuation.refreshToken,
+                    "client_id": clientConfiguration.clientID,
+                ]),
+                allowedOrigins: [try Self.origin(of: continuation.authorizationServer)]
+            )
+        } catch OpenID4VCBackendError.remoteOAuthError(let code, _)
+            where code == "invalid_grant" || code == "invalid_token" {
+            return .authorizationRequired(continuation)
+        }
+        let token = try Self.decode(TokenResponse.self, from: tokenData, stage: "refresh token response")
+        let expectedTokenType = continuation.usesDPoP ? "DPoP" : "Bearer"
+        guard token.tokenType?.caseInsensitiveCompare(expectedTokenType) == .orderedSame else {
+            throw OpenID4VCBackendError.invalidTokenType(expected: expectedTokenType, actual: token.tokenType)
+        }
+        let rotated = W3CCredentialRefreshContinuation(
+            credentialID: continuation.credentialID, issuer: continuation.issuer,
+            authorizationServer: continuation.authorizationServer, tokenEndpoint: continuation.tokenEndpoint,
+            credentialEndpoint: continuation.credentialEndpoint, nonceEndpoint: continuation.nonceEndpoint,
+            refreshToken: token.refreshToken.flatMap { $0.isEmpty ? nil : $0 } ?? continuation.refreshToken,
+            configurationID: continuation.configurationID,
+            credentialIdentifier: continuation.credentialIdentifier, expectation: continuation.expectation,
+            holderIdentity: continuation.holderIdentity, transportProfile: continuation.transportProfile,
+            usesDPoP: continuation.usesDPoP,
+            requiresClientAttestation: continuation.requiresClientAttestation,
+            requiresCredentialResponseEncryption: continuation.requiresCredentialResponseEncryption,
+            securityState: continuation.securityState
+        )
+        try await checkpoint(rotated)
+
+        let responseEncryption: CredentialResponseEncryptionRequest?
+        if continuation.requiresCredentialResponseEncryption {
+            guard let state = continuation.securityState, let clientSecurity else {
+                throw OpenID4VCBackendError.clientSecurityUnavailable
+            }
+            let parameters = try await clientSecurity.responseEncryption(state: state)
+            guard let jwk = try JSONSerialization.jsonObject(with: Data(parameters.publicJWK.utf8)) as? [String: String] else {
+                throw OpenID4VCBackendError.clientSecurityUnavailable
+            }
+            responseEncryption = CredentialResponseEncryptionRequest(
+                jwk: jwk, alg: parameters.algorithm, enc: parameters.encryption
+            )
+        } else {
+            responseEncryption = nil
+        }
+        let nonce: String?
+        if let endpoint = continuation.nonceEndpoint {
+            let data = try await successfulRequest(
+                endpoint, method: "POST", headers: ["Accept": "application/json"], body: nil,
+                allowedOrigins: [try Self.origin(of: continuation.issuer)]
+            )
+            let value = try Self.decode(CredentialNonceResponse.self, from: data, stage: "refresh nonce response")
+            guard !value.nonce.isEmpty else { throw OpenID4VCBackendError.invalidResponse }
+            nonce = value.nonce
+        } else {
+            nonce = token.nonce
+        }
+        let proof = try await proofJWT(
+            keyID: continuation.holderIdentity.keyID,
+            kid: continuation.holderIdentity.assertionMethod,
+            issuer: continuation.holderIdentity.did,
+            audience: continuation.issuer.absoluteString,
+            nonce: nonce
+        )
+        let usesIdentifier = continuation.credentialIdentifier != nil || continuation.transportProfile != .final
+        let request = CredentialRequest(
+            credentialConfigurationId: usesIdentifier ? nil : continuation.configurationID,
+            credentialIdentifier: usesIdentifier
+                ? (continuation.credentialIdentifier ?? continuation.configurationID) : nil,
+            format: nil,
+            proof: continuation.transportProfile == .draft13 || continuation.transportProfile == .draft18
+                ? ProofValue(proofType: "jwt", jwt: proof) : nil,
+            proofs: continuation.transportProfile == .draft13 || continuation.transportProfile == .draft18
+                ? nil : ["jwt": [proof]],
+            credentialResponseEncryption: responseEncryption
+        )
+        var headers = [
+            "Content-Type": "application/json",
+            "Authorization": "Bearer \(token.accessToken)",
+        ]
+        if continuation.usesDPoP {
+            guard let state = continuation.securityState, let clientSecurity else {
+                throw OpenID4VCBackendError.clientSecurityUnavailable
+            }
+            headers["DPoP"] = try await clientSecurity.dpopHeader(
+                state: state, method: "POST", targetURI: continuation.credentialEndpoint,
+                accessToken: token.accessToken
+            )
+            headers["Authorization"] = "DPoP \(token.accessToken)"
+        }
+        var response = try await successfulRequest(
+            continuation.credentialEndpoint, method: "POST", headers: headers,
+            body: try JSONEncoder().encode(request),
+            allowedOrigins: [try Self.origin(of: continuation.issuer)]
+        )
+        if continuation.requiresCredentialResponseEncryption {
+            guard Self.looksLikeCompactJWE(response), let state = continuation.securityState,
+                  let clientSecurity else { throw OpenID4VCBackendError.invalidResponse }
+            response = try await clientSecurity.decryptCredentialResponse(state: state, compactJWE: response)
+        }
+        let credentialResponse = try Self.decode(
+            CredentialResponse.self, from: response, stage: "refresh credential response"
+        )
+        guard credentialResponse.credentials.count == 1, credentialResponse.transactionID == nil else {
+            throw OpenID4VCBackendError.invalidResponse
+        }
+        let staged = try await stageCredentialPayload(
+            credentialResponse, configurationID: continuation.configurationID,
+            issuer: continuation.issuer, holderIdentity: continuation.holderIdentity,
+            expectedFormat: continuation.expectation.format,
+            displayName: continuation.expectation.displayName, display: continuation.expectation.display
+        )
+        guard staged.count == 1, continuation.expectation.profileIDs.contains(staged[0].result.profileID) else {
+            throw OpenID4VCBackendError.refreshCredentialMismatch
+        }
+        let replacement = StoredEbsiCredential(
+            id: continuation.credentialID, profileID: staged[0].stored.profileID,
+            representation: staged[0].stored.representation, rawCredential: staged[0].stored.rawCredential,
+            holderKeyReference: staged[0].stored.holderKeyReference, receivedAt: staged[0].stored.receivedAt
+        )
+        let result = IssuedW3CCredential(
+            id: continuation.credentialID, configurationID: staged[0].result.configurationID,
+            displayName: staged[0].result.displayName, issuerIdentifier: staged[0].result.issuerIdentifier,
+            profileID: staged[0].result.profileID, representation: staged[0].result.representation,
+            hasStatusReference: staged[0].result.hasStatusReference,
+            displayClaims: staged[0].result.displayClaims, display: staged[0].result.display,
+            refreshContinuation: rotated
+        )
+        let warning = staged[0].signerVerificationUnavailable
+            ? unavailableEBSISignerWarning(issuer: result.issuerIdentifier)
+            : await credentialSignerWarning(for: [result.issuerIdentifier])
+        if let warning, !allowUntrustedSigner {
+            return .signerTrustRequired(
+                warning,
+                PendingW3CCredentialRefresh(
+                    replacement: replacement,
+                    result: result,
+                    continuation: rotated,
+                    signerVerificationUnavailable: staged[0].signerVerificationUnavailable
+                )
+            )
+        }
+        try await credentialStore.replace(id: continuation.credentialID, with: replacement)
+        return .replaced(result, rotated)
+    }
+
+    public func commitRefresh(
+        _ pending: PendingW3CCredentialRefresh,
+        allowUntrustedSigner: Bool
+    ) async throws -> W3CCredentialRefreshOutcome {
+        guard allowUntrustedSigner,
+              pending.replacement.id == pending.continuation.credentialID,
+              pending.result.id == pending.continuation.credentialID else {
+            throw OpenID4VCBackendError.untrustedConsentRequired
+        }
+        try validateRefreshState(pending.continuation)
+        guard pending.continuation.expectation.profileIDs.contains(pending.replacement.profileID),
+              pending.replacement.profileID == pending.result.profileID,
+              pending.replacement.representation == pending.result.representation,
+              pending.replacement.holderKeyReference
+                == pending.continuation.holderIdentity.keyID.rawValue.uuidString,
+              let profile = profiles.first(where: { $0.id == pending.replacement.profileID }) else {
+            throw OpenID4VCBackendError.refreshCredentialMismatch
+        }
+        let validation = try await validateCredential(
+            rawCredential: pending.replacement.rawCredential, profile: profile, expectedIssuer: nil,
+            expectedHolderDID: pending.continuation.holderIdentity.did, at: now()
+        )
+        guard validation.issuer == pending.result.issuerIdentifier,
+              validation.isVerified || pending.signerVerificationUnavailable == true else {
+            throw OpenID4VCBackendError.refreshCredentialMismatch
+        }
+        try await credentialStore.replace(id: pending.continuation.credentialID, with: pending.replacement)
+        return .replaced(pending.result, pending.continuation)
+    }
+
     public func retrieveDeferredCredential(
         _ deferred: DeferredW3CCredential
     ) async throws -> W3CCredentialIssuanceOutcome {
         try validateDeferredState(deferred)
         if deferred.remoteTransactionIDs.isEmpty {
             try await validateRestoredStagedCredentials(deferred.stagedCredentials, state: deferred)
-            if let warning = await credentialSignerWarning(
-                for: deferred.stagedCredentials.map(\.issued.issuerIdentifier)
-            ) {
+            if let warning = await credentialSignerWarning(for: deferred.stagedCredentials) {
                 throw OpenID4VCBackendError.deferredCredentialSignerTrustWarning(warning, deferred)
             }
             return try await commitDeferredCredential(deferred, allowUntrusted: true)
@@ -2267,14 +2591,15 @@ public actor OpenID4VCW3CBackend {
                   let profile = profiles.first(where: { $0.id == item.stored.profileID }) else {
                 throw OpenID4VCBackendError.invalidResponse
             }
-            let signedIssuer = try await credentialValidator.validate(
+            let validation = try await validateCredential(
                 rawCredential: item.stored.rawCredential,
                 profile: profile,
                 expectedIssuer: nil,
                 expectedHolderDID: state.holderIdentity.did,
                 at: now()
             )
-            guard signedIssuer == item.issued.issuerIdentifier else {
+            guard validation.issuer == item.issued.issuerIdentifier,
+                  validation.isVerified || item.signerVerificationUnavailable == true else {
                 throw OpenID4VCBackendError.invalidResponse
             }
         }
@@ -2312,6 +2637,25 @@ public actor OpenID4VCW3CBackend {
         }) else { throw OpenID4VCBackendError.unsafeEndpoint }
     }
 
+    private func validateRefreshState(_ state: W3CCredentialRefreshContinuation) throws {
+        try Self.validateHTTPS(state.issuer)
+        try Self.validateHTTPS(state.authorizationServer)
+        try Self.validateHTTPS(state.tokenEndpoint)
+        try Self.validateHTTPS(state.credentialEndpoint)
+        guard try Self.origin(of: state.tokenEndpoint) == Self.origin(of: state.authorizationServer),
+              try Self.origin(of: state.credentialEndpoint) == Self.origin(of: state.issuer),
+              state.nonceEndpoint.map({ (try? Self.origin(of: $0)) == (try? Self.origin(of: state.issuer)) }) ?? true,
+              !state.refreshToken.isEmpty, !state.configurationID.isEmpty,
+              !state.expectation.profileIDs.isEmpty,
+              state.expectation.profileIDs.allSatisfy({ expected in profiles.contains { $0.id == expected } }),
+              compatibleProfileIDs(format: state.expectation.format).contains(where: state.expectation.profileIDs.contains),
+              (!state.usesDPoP && !state.requiresClientAttestation && !state.requiresCredentialResponseEncryption)
+                || state.securityState != nil else {
+            throw OpenID4VCBackendError.invalidResponse
+        }
+        if let nonceEndpoint = state.nonceEndpoint { try Self.validateHTTPS(nonceEndpoint) }
+    }
+
     private func compatibleProfileIDs(format: String) -> [String] {
         profiles.filter { profile in
             switch format {
@@ -2344,7 +2688,13 @@ public actor OpenID4VCW3CBackend {
         guard staged.allSatisfy({ expectation.profileIDs.contains($0.result.profileID) }) else {
             throw OpenID4VCBackendError.invalidResponse
         }
-        return staged.map { DeferredStagedCredential(stored: $0.stored, issued: $0.result) }
+        return staged.map {
+            DeferredStagedCredential(
+                stored: $0.stored,
+                issued: $0.result,
+                signerVerificationUnavailable: $0.signerVerificationUnavailable
+            )
+        }
     }
 
     private func sendDeferredNotification(
@@ -2403,7 +2753,7 @@ public actor OpenID4VCW3CBackend {
                 format: response.format ?? item.format ?? expectedFormat,
                 rawCredential: raw
             )
-            let signedIssuer = try await credentialValidator.validate(
+            let validation = try await validateCredential(
                 rawCredential: raw,
                 profile: selectedProfile,
                 expectedIssuer: nil,
@@ -2421,16 +2771,21 @@ public actor OpenID4VCW3CBackend {
                 id: stored.id,
                 configurationID: configurationID,
                 displayName: displayName,
-                issuerIdentifier: signedIssuer,
+                issuerIdentifier: validation.issuer,
                 profileID: stored.profileID,
                 representation: stored.representation,
                 hasStatusReference: Self.hasCredentialStatus(raw: raw, profile: selectedProfile),
                 displayClaims: Self.displayClaims(
                     raw: String(decoding: raw, as: UTF8.self), profile: selectedProfile
                 ),
-                display: display
+                display: display,
+                refreshContinuation: nil
             )
-            staged.append(StagedCredential(stored: stored, result: result))
+            staged.append(StagedCredential(
+                stored: stored,
+                result: result,
+                signerVerificationUnavailable: !validation.isVerified
+            ))
         }
         return staged
     }
@@ -2467,6 +2822,56 @@ public actor OpenID4VCW3CBackend {
             }
         }
         return nil
+    }
+
+    private func credentialSignerWarning(for staged: [StagedCredential]) async -> EbsiTrustWarning? {
+        if let item = staged.first(where: { $0.signerVerificationUnavailable }) {
+            return unavailableEBSISignerWarning(issuer: item.result.issuerIdentifier)
+        }
+        return await credentialSignerWarning(for: staged.map(\.result.issuerIdentifier))
+    }
+
+    private func credentialSignerWarning(for staged: [DeferredStagedCredential]) async -> EbsiTrustWarning? {
+        if let item = staged.first(where: { $0.signerVerificationUnavailable == true }) {
+            return unavailableEBSISignerWarning(issuer: item.issued.issuerIdentifier)
+        }
+        return await credentialSignerWarning(for: staged.map(\.issued.issuerIdentifier))
+    }
+
+    private func unavailableEBSISignerWarning(issuer: String) -> EbsiTrustWarning {
+        EbsiTrustWarning(
+            counterpartyIdentifier: issuer,
+            role: .issuer,
+            reasons: [.trustSourceUnavailable],
+            evidenceSources: [],
+            nextAction: "Continue to store the credential without verified EBSI signer evidence, or Cancel. No credential has been stored and no credential request will be repeated.",
+            diagnostic: "The EBSI issuer DID document or signing keys could not be resolved."
+        )
+    }
+
+    private func validateCredential(
+        rawCredential: Data,
+        profile: EbsiCredentialProfile,
+        expectedIssuer: String?,
+        expectedHolderDID: String,
+        at date: Date
+    ) async throws -> W3CCredentialValidationOutcome {
+        if let validator = credentialValidator as? any EBSIAvailabilityAwareCredentialValidating {
+            return try await validator.validateAllowingUnavailableEBSIDID(
+                rawCredential: rawCredential,
+                profile: profile,
+                expectedIssuer: expectedIssuer,
+                expectedHolderDID: expectedHolderDID,
+                at: date
+            )
+        }
+        return .verified(issuer: try await credentialValidator.validate(
+            rawCredential: rawCredential,
+            profile: profile,
+            expectedIssuer: expectedIssuer,
+            expectedHolderDID: expectedHolderDID,
+            at: date
+        ))
     }
 
     private func commitStagedCredentials(
@@ -2526,8 +2931,9 @@ public actor OpenID4VCW3CBackend {
         if format == "jwt_vc_json" {
             if context == "https://www.w3.org/ns/credentials/v2",
                let profile = profiles.first(where: {
-                   $0.representation == .jwtVcJson && $0.dataModel == .v2_0
-               }) {
+                    ($0.representation == .jwtVcJson || $0.representation == .vcdm2Jwt)
+                        && $0.dataModel == .v2_0
+                }) {
                 return profile
             }
             if context == "https://www.w3.org/2018/credentials/v1",
@@ -3808,12 +4214,14 @@ private struct TokenResponse: Decodable {
         }
     }
     let accessToken: String
+    let refreshToken: String?
     let tokenType: String?
     let expiresIn: Int?
     let nonce: String?
     let authorizationDetails: [AuthorizationDetail]?
     enum CodingKeys: String, CodingKey {
         case accessToken = "access_token"
+        case refreshToken = "refresh_token"
         case tokenType = "token_type"
         case expiresIn = "expires_in"
         case nonce = "c_nonce"

@@ -78,4 +78,33 @@ struct CredentialModelsTests {
         )
         #expect(decodedLegacy.display == nil)
     }
+
+    @Test("Legacy credentials default to manual refresh and scheduling metadata round trips")
+    func refreshMetadataCompatibility() throws {
+        let record = CredentialRecord(
+            configurationID: "pid", displayName: "PID", format: .jwtVC,
+            profileID: "w3c", issuerIdentifier: "https://issuer.example",
+            createdAt: Date(timeIntervalSince1970: 1_700_000_000),
+            refresh: CredentialRefreshMetadata(
+                mode: .automatic, state: .scheduled,
+                nextRefreshAt: Date(timeIntervalSince1970: 1_800_000_000),
+                lastAttemptAt: Date(timeIntervalSince1970: 1_700_000_100),
+                lastSuccessfulRefreshAt: Date(timeIntervalSince1970: 1_700_000_050),
+                consecutiveFailures: 2
+            )
+        )
+        #expect(try JSONDecoder().decode(
+            CredentialRecord.self, from: JSONEncoder().encode(record)
+        ) == record)
+
+        var legacy = try #require(JSONSerialization.jsonObject(
+            with: JSONEncoder().encode(record)
+        ) as? [String: Any])
+        legacy.removeValue(forKey: "refresh")
+        let decoded = try JSONDecoder().decode(
+            CredentialRecord.self, from: JSONSerialization.data(withJSONObject: legacy)
+        )
+        #expect(decoded.refresh == .manual)
+        #expect(decoded.refresh.mode == .manual)
+    }
 }

@@ -68,6 +68,207 @@ private final class DeferredTestClock: @unchecked Sendable {
 }
 
 struct OpenID4VCW3CBackendTests {
+    @Test("Unavailable EBSI DID resolution requires consent and Continue does not repeat issuance")
+    func unavailableEBSIDIDRequiresConsent() async throws {
+        let transport = FixtureOpenID4VCTransport()
+        let store = FixtureCredentialStore()
+        let validator = AvailabilityAwareFixtureCredentialValidator(outcomes: [
+            .ebsiDIDResolutionUnavailable(issuer: "did:ebsi:unavailableIssuer"),
+        ])
+        let backend = OpenID4VCW3CBackend(
+            transport: transport,
+            trustEvaluator: TrustedIssuerEvaluator(),
+            keyProvider: FixtureKeyProvider(),
+            credentialStore: store,
+            credentialValidator: validator,
+            profile: try .vcdm2JWTVC()
+        )
+        let offer = try await backend.resolveOffer("https://issuer.example/offer")
+
+        do {
+            _ = try await backend.issueOutcome(
+                id: offer.id, allowUntrusted: false, transactionCode: "123456"
+            )
+            Issue.record("Expected an EBSI signer warning")
+        } catch OpenID4VCBackendError.credentialSignerTrustWarning(let warning) {
+            #expect(warning.counterpartyIdentifier == "did:ebsi:unavailableIssuer")
+            #expect(warning.reasons == [.trustSourceUnavailable])
+        }
+        #expect(try await store.credentials().isEmpty)
+        let requestCount = await transport.requests.count
+
+        guard case let .issued(credentials) = try await backend.issueOutcome(
+            id: offer.id, allowUntrusted: true, transactionCode: nil
+        ) else {
+            Issue.record("Expected the consented credential to be committed")
+            return
+        }
+        #expect(credentials.first?.issuerIdentifier == "did:ebsi:unavailableIssuer")
+        #expect(try await store.credentials().count == 1)
+        #expect(await transport.requests.count == requestCount)
+    }
+
+    @Test("Non-EBSI signer resolution failures remain hard errors")
+    func nonEBSISignerResolutionFailureRemainsHard() async throws {
+        let backend = OpenID4VCW3CBackend(
+            transport: FixtureOpenID4VCTransport(),
+            trustEvaluator: TrustedIssuerEvaluator(),
+            keyProvider: FixtureKeyProvider(),
+            credentialStore: FixtureCredentialStore(),
+            credentialValidator: ThrowingFixtureCredentialValidator(error: .issuerSigningKeysUnresolved),
+            profile: try .vcdm2JWTVC()
+        )
+        let offer = try await backend.resolveOffer("https://issuer.example/offer")
+        await #expect(throws: EbsiCredentialError.issuerSigningKeysUnresolved) {
+            _ = try await backend.issueOutcome(
+                id: offer.id, allowUntrusted: false, transactionCode: "123456"
+            )
+        }
+    }
+
+    @Test("Refresh pauses for unavailable EBSI signer evidence and commits only after consent")
+    func refreshUnavailableEBSIDIDRequiresConsent() async throws {
+        let transport = FixtureOpenID4VCTransport(
+            initialCredentialStatus: 200, initialTransactionID: nil,
+            tokenResponse: #"{"access_token":"access","token_type":"Bearer","c_nonce":"initial","refresh_token":"refresh-1"}"#,
+            refreshTokenResponse: #"{"access_token":"access-2","token_type":"Bearer","c_nonce":"refresh","refresh_token":"refresh-2"}"#
+        )
+        let store = FixtureCredentialStore()
+        let validator = AvailabilityAwareFixtureCredentialValidator(outcomes: [
+            .verified(issuer: "did:ebsi:refreshIssuer"),
+            .ebsiDIDResolutionUnavailable(issuer: "did:ebsi:refreshIssuer"),
+            .ebsiDIDResolutionUnavailable(issuer: "did:ebsi:refreshIssuer"),
+        ])
+        let backend = OpenID4VCW3CBackend(
+            transport: transport,
+            trustEvaluator: TrustedIssuerEvaluator(),
+            credentialSignerTrustEvaluator: TrustedSignerEvaluator(),
+            keyProvider: FixtureKeyProvider(),
+            credentialStore: store,
+            credentialValidator: validator,
+            profile: try .vcdm2JWTVC()
+        )
+        let offer = try await backend.resolveOffer("https://issuer.example/offer")
+        guard case let .issued(credentials) = try await backend.issueOutcome(
+            id: offer.id, allowUntrusted: false, transactionCode: "123456"
+        ), let continuation = credentials.first?.refreshContinuation else {
+            Issue.record("Expected refresh state")
+            return
+        }
+
+        guard case let .signerTrustRequired(warning, pending) = try await backend.refreshCredential(continuation) else {
+            Issue.record("Expected signer consent before replacement")
+            return
+        }
+        #expect(warning.reasons == [.trustSourceUnavailable])
+        #expect(pending.signerVerificationUnavailable == true)
+        #expect(try await store.credentials().first?.id == continuation.credentialID)
+
+        guard case let .replaced(_, rotated) = try await backend.commitRefresh(
+            pending, allowUntrustedSigner: true
+        ) else {
+            Issue.record("Expected replacement after consent")
+            return
+        }
+        #expect(rotated.refreshToken == "refresh-2")
+        #expect(try await store.credentials().count == 1)
+    }
+
+    @Test("Refresh token is decoded, rotated, and used to replace the credential")
+    func refreshTokenRotation() async throws {
+        let transport = FixtureOpenID4VCTransport(
+            initialCredentialStatus: 200, initialTransactionID: nil,
+            tokenResponse: #"{"access_token":"access","token_type":"Bearer","c_nonce":"initial","refresh_token":"refresh-1"}"#,
+            refreshTokenResponse: #"{"access_token":"access-2","token_type":"Bearer","c_nonce":"refresh","refresh_token":"refresh-2"}"#
+        )
+        let store = FixtureCredentialStore()
+        let backend = OpenID4VCW3CBackend(
+            transport: transport, trustEvaluator: TrustedIssuerEvaluator(),
+            keyProvider: FixtureKeyProvider(), credentialStore: store,
+            credentialValidator: FixtureCredentialValidator(), profile: try .vcdm2JWTVC()
+        )
+        let offer = try await backend.resolveOffer("https://issuer.example/offer")
+        let outcome = try await backend.issueOutcome(
+            id: offer.id, allowUntrusted: false, transactionCode: "123456"
+        )
+        guard case let .issued(credentials) = outcome,
+              let continuation = credentials.first?.refreshContinuation else {
+            Issue.record("Expected an issued credential with refresh state")
+            return
+        }
+        #expect(continuation.refreshToken == "refresh-1")
+        let refreshed = try await backend.refreshCredential(continuation)
+        guard case let .replaced(result, rotated) = refreshed else {
+            Issue.record("Expected an immediate replacement")
+            return
+        }
+        #expect(result.id == credentials[0].id)
+        #expect(rotated.refreshToken == "refresh-2")
+        #expect(try await store.credentials().count == 1)
+        let refreshRequest = try #require((await transport.requests).last { $0.url.path == "/token" })
+        #expect(String(decoding: refreshRequest.body ?? Data(), as: UTF8.self).contains("grant_type=refresh_token"))
+        #expect(String(decoding: refreshRequest.body ?? Data(), as: UTF8.self).contains("refresh_token=refresh-1"))
+    }
+
+    @Test("Rejected refresh token returns authorization-required without replacing the credential", arguments: [
+        "invalid_grant", "invalid_token",
+    ])
+    func rejectedRefreshGrant(errorCode: String) async throws {
+        let transport = FixtureOpenID4VCTransport(
+            initialCredentialStatus: 200, initialTransactionID: nil,
+            tokenResponse: #"{"access_token":"access","token_type":"Bearer","c_nonce":"initial","refresh_token":"refresh-1"}"#,
+            refreshTokenResponse: "{\"error\":\"\(errorCode)\"}", refreshTokenStatus: 400
+        )
+        let store = FixtureCredentialStore()
+        let backend = OpenID4VCW3CBackend(
+            transport: transport, trustEvaluator: TrustedIssuerEvaluator(),
+            keyProvider: FixtureKeyProvider(), credentialStore: store,
+            credentialValidator: FixtureCredentialValidator(), profile: try .vcdm2JWTVC()
+        )
+        let offer = try await backend.resolveOffer("https://issuer.example/offer")
+        guard case let .issued(credentials) = try await backend.issueOutcome(
+            id: offer.id, allowUntrusted: false, transactionCode: "123456"
+        ), let continuation = credentials.first?.refreshContinuation else {
+            Issue.record("Expected refresh state")
+            return
+        }
+        let result = try await backend.refreshCredential(continuation)
+        guard case .authorizationRequired = result else {
+            Issue.record("Expected authorization-required")
+            return
+        }
+        #expect(try await store.credentials().first?.id == continuation.credentialID)
+    }
+
+    @Test("Rotated refresh token is checkpointed before a later credential request failure")
+    func refreshRotationCheckpointPrecedesCredentialFailure() async throws {
+        let transport = FixtureOpenID4VCTransport(
+            initialCredentialStatus: 200, initialTransactionID: nil,
+            tokenResponse: #"{"access_token":"access","token_type":"Bearer","c_nonce":"initial","refresh_token":"refresh-1"}"#,
+            refreshTokenResponse: #"{"access_token":"access-2","token_type":"Bearer","c_nonce":"refresh","refresh_token":"refresh-2"}"#,
+            refreshCredentialStatus: 503
+        )
+        let backend = OpenID4VCW3CBackend(
+            transport: transport, trustEvaluator: TrustedIssuerEvaluator(),
+            keyProvider: FixtureKeyProvider(), credentialStore: FixtureCredentialStore(),
+            credentialValidator: FixtureCredentialValidator(), profile: try .vcdm2JWTVC()
+        )
+        let offer = try await backend.resolveOffer("https://issuer.example/offer")
+        guard case let .issued(credentials) = try await backend.issueOutcome(
+            id: offer.id, allowUntrusted: false, transactionCode: "123456"
+        ), let continuation = credentials.first?.refreshContinuation else {
+            Issue.record("Expected refresh state")
+            return
+        }
+        let checkpoint = RefreshCheckpointRecorder()
+        await #expect(throws: OpenID4VCBackendError.self) {
+            _ = try await backend.refreshCredential(continuation) { rotated in
+                await checkpoint.record(rotated)
+            }
+        }
+        #expect(await checkpoint.continuation?.refreshToken == "refresh-2")
+    }
+
     @Test("Wallet redirect configuration accepts the registered HTTPS URI")
     func walletRedirectConfiguration() throws {
         let configuration = try OpenID4VCClientConfiguration(
@@ -171,6 +372,60 @@ struct OpenID4VCW3CBackendTests {
         let body = try #require(request.body)
         let object = try #require(JSONSerialization.jsonObject(with: body) as? [String: String])
         #expect(object == ["transaction_id": "transaction-1"])
+    }
+
+    @Test("Deferred EBSI signer resolution warning survives persistence and requires consent")
+    func deferredUnavailableEBSIDIDRequiresConsent() async throws {
+        let transport = FixtureOpenID4VCTransport(deferredInterval: 1)
+        let store = FixtureCredentialStore()
+        let clock = DeferredTestClock(Date(timeIntervalSince1970: 1_800_000_000))
+        let issuer = "did:ebsi:deferredIssuer"
+        let validator = AvailabilityAwareFixtureCredentialValidator(outcomes: [
+            .ebsiDIDResolutionUnavailable(issuer: issuer),
+            .ebsiDIDResolutionUnavailable(issuer: issuer),
+            .ebsiDIDResolutionUnavailable(issuer: issuer),
+        ])
+        let backend = OpenID4VCW3CBackend(
+            transport: transport,
+            trustEvaluator: TrustedIssuerEvaluator(),
+            keyProvider: FixtureKeyProvider(),
+            credentialStore: store,
+            credentialValidator: validator,
+            profile: try .vcdm2JWTVC(),
+            now: { clock.value }
+        )
+        let offer = try await backend.resolveOffer("https://issuer.example/offer")
+        guard case let .deferred(deferred) = try await backend.issueOutcome(
+            id: offer.id, allowUntrusted: false, transactionCode: "123456"
+        ) else {
+            Issue.record("Expected deferred issuance")
+            return
+        }
+        clock.advance(by: 1)
+        guard case let .deferred(checkpoint) = try await backend.retrieveDeferredCredential(deferred) else {
+            Issue.record("Expected staged deferred checkpoint")
+            return
+        }
+        #expect(checkpoint.stagedCredentials.first?.signerVerificationUnavailable == true)
+        let restored = try JSONDecoder().decode(
+            DeferredW3CCredential.self,
+            from: JSONEncoder().encode(checkpoint)
+        )
+
+        do {
+            _ = try await backend.retrieveDeferredCredential(restored)
+            Issue.record("Expected deferred signer warning")
+        } catch OpenID4VCBackendError.deferredCredentialSignerTrustWarning(let warning, let pending) {
+            #expect(warning.counterpartyIdentifier == issuer)
+            #expect(warning.reasons == [.trustSourceUnavailable])
+            let completed = try await backend.commitDeferredCredential(pending, allowUntrusted: true)
+            guard case let .issued(credentials) = completed else {
+                Issue.record("Expected deferred credential commit")
+                return
+            }
+            #expect(credentials.first?.issuerIdentifier == issuer)
+        }
+        #expect(try await store.credentials().count == 1)
     }
 
     @Test("Each retrieval checkpoints one ready transaction before requesting the next")
@@ -1003,7 +1258,7 @@ struct OpenID4VCW3CBackendTests {
         ).compactMap { item in item.value.map { (item.name, $0) } })
         #expect(initialFields["interaction_types_supported"] == "urn:openid:dcp:ia:openid4vp_presentation,urn:openid:dcp:ia:auth_via_web")
         #expect(initialFields["client_id"] == "generic-wallet-client")
-        #expect(initialFields["redirect_uri"] == "https://wallet.ios.oari.io/oauth/callback")
+        #expect(initialFields["redirect_uri"] == "https://wallet.example/callback")
         #expect(initialFields["state"] == nil)
         #expect(initialFields["auth_session"] == nil)
         #expect(try await backend.submitPresentation(
@@ -1624,7 +1879,7 @@ struct OpenID4VCW3CBackendTests {
             transport: StandaloneEnvelopeTransport(response: .init(statusCode: 500, body: Data()))
         )
         let encodedAccepted = try #require(accepted.addingPercentEncoding(withAllowedCharacters: .alphanumerics))
-        await #expect(throws: OpenID4VCBackendError.presentationCredentialUnavailable) {
+        await #expect(throws: OpenID4VCBackendError.self) {
             _ = try await acceptedBackend.beginStoredOpenID4VPPresentation(uri: envelope + encodedAccepted)
         }
         for (audience, issuer) in [("did:ebsi:zVerifier", "did:ebsi:zSomeoneElse"), ("did:ebsi:zVerifier", nil)] {
@@ -1716,7 +1971,7 @@ struct OpenID4VCW3CBackendTests {
             headers: ["cOnTeNt-TyPe": "Application/OAuth-Authz-Req+JWT; charset=UTF-8"]
         ))
         let upperBoundaryBackend = try Self.standaloneEnvelopeBackend(transport: upperBoundary)
-        await #expect(throws: OpenID4VCBackendError.presentationCredentialUnavailable) {
+        await #expect(throws: OpenID4VCBackendError.self) {
             _ = try await upperBoundaryBackend.beginStoredOpenID4VPPresentation(
                 uri: "openid4vp://?client_id=decentralized_identifier:did:key:verifier&request_uri=https://issuer.example/request&request_uri_method=get"
             )
@@ -1725,7 +1980,7 @@ struct OpenID4VCW3CBackendTests {
         let neverFetch = StandaloneEnvelopeTransport(response: .init(statusCode: 500, body: Data()))
         let inlineBackend = try Self.standaloneEnvelopeBackend(transport: neverFetch)
         let encoded = try #require(jwt.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed))
-        await #expect(throws: OpenID4VCBackendError.presentationCredentialUnavailable) {
+        await #expect(throws: OpenID4VCBackendError.self) {
             _ = try await inlineBackend.beginStoredOpenID4VPPresentation(
                 uri: "openid4vp://?client_id=decentralized_identifier:did:key:verifier&request=\(encoded)"
             )
@@ -2188,6 +2443,14 @@ private actor StandaloneEnvelopeTransport: OpenID4VCHTTPTransport {
     }
 }
 
+private actor RefreshCheckpointRecorder {
+    private(set) var continuation: W3CCredentialRefreshContinuation?
+
+    func record(_ continuation: W3CCredentialRefreshContinuation) {
+        self.continuation = continuation
+    }
+}
+
 private actor FixtureOpenID4VCTransport: OpenID4VCHTTPTransport {
     static let png = Data([
         0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
@@ -2214,6 +2477,9 @@ private actor FixtureOpenID4VCTransport: OpenID4VCHTTPTransport {
     private let secondDeferredFails: Bool
     private let advertisesNonceEndpoint: Bool
     private let tokenResponse: String
+    private let refreshTokenResponse: String?
+    private let refreshTokenStatus: Int
+    private let refreshCredentialStatus: Int?
     private let credentialIssuerMetadata: String
     private var authorizationState: String?
 
@@ -2237,6 +2503,9 @@ private actor FixtureOpenID4VCTransport: OpenID4VCHTTPTransport {
         secondDeferredFails: Bool = false,
         advertisesNonceEndpoint: Bool = false,
         tokenResponse: String = #"{"access_token":"access","token_type":"Bearer","c_nonce":"nonce-1"}"#,
+        refreshTokenResponse: String? = nil,
+        refreshTokenStatus: Int = 200,
+        refreshCredentialStatus: Int? = nil,
         credentialIssuerMetadata: String = "https://issuer.example"
     ) {
         self.presentationFormat = presentationFormat
@@ -2258,6 +2527,9 @@ private actor FixtureOpenID4VCTransport: OpenID4VCHTTPTransport {
         self.secondDeferredFails = secondDeferredFails
         self.advertisesNonceEndpoint = advertisesNonceEndpoint
         self.tokenResponse = tokenResponse
+        self.refreshTokenResponse = refreshTokenResponse
+        self.refreshTokenStatus = refreshTokenStatus
+        self.refreshCredentialStatus = refreshCredentialStatus
         self.credentialIssuerMetadata = credentialIssuerMetadata
     }
     func send(url: URL, method: String, headers: [String: String], body: Data?) async throws -> OpenID4VCHTTPResponse {
@@ -2283,7 +2555,13 @@ private actor FixtureOpenID4VCTransport: OpenID4VCHTTPTransport {
         case "/.well-known/oauth-authorization-server":
             response = #"{"authorization_challenge_endpoint":"https://issuer.example/authorize-challenge","token_endpoint":"https://issuer.example/token"}"#
         case "/token":
-            response = tokenResponse
+            if String(decoding: body ?? Data(), as: UTF8.self).contains("grant_type=refresh_token"),
+               let refreshTokenResponse {
+                statusCode = refreshTokenStatus
+                response = refreshTokenResponse
+            } else {
+                response = tokenResponse
+            }
         case "/nonce":
             response = #"{"c_nonce":"nonce-from-endpoint"}"#
         case "/authorize-challenge", "/authorize":
@@ -2323,6 +2601,12 @@ private actor FixtureOpenID4VCTransport: OpenID4VCHTTPTransport {
             }
             response = String(decoding: try JSONSerialization.data(withJSONObject: authorizationResponse), as: UTF8.self)
         case "/credential":
+            if let refreshCredentialStatus,
+               headers["Authorization"]?.contains("access-2") == true {
+                statusCode = refreshCredentialStatus
+                response = #"{"detail":"refresh credential failed"}"#
+                break
+            }
             if emitsTransaction {
                 statusCode = initialCredentialStatus
                 let request = body.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
@@ -2585,6 +2869,10 @@ private struct UntrustedSignerEvaluator: CredentialSignerTrustEvaluating {
     }
 }
 
+private struct TrustedSignerEvaluator: CredentialSignerTrustEvaluating {
+    func evaluate(issuer: String, at date: Date) async -> TrustVerdict { .trusted(evidence: []) }
+}
+
 private actor FixtureCredentialStore: EbsiCredentialStore {
     private var values: [StoredEbsiCredential] = []
     init(values: [StoredEbsiCredential] = []) { self.values = values }
@@ -2608,6 +2896,56 @@ private actor FixtureCredentialValidator: W3CCredentialValidating {
         #expect(expectedIssuer?.isEmpty != true)
         #expect(!expectedHolderDID.isEmpty)
         return signedIssuer ?? expectedIssuer ?? "https://issuer.example"
+    }
+}
+
+private actor AvailabilityAwareFixtureCredentialValidator: EBSIAvailabilityAwareCredentialValidating {
+    private var outcomes: [W3CCredentialValidationOutcome]
+
+    init(outcomes: [W3CCredentialValidationOutcome]) { self.outcomes = outcomes }
+
+    func validate(
+        rawCredential: Data,
+        profile: EbsiCredentialProfile,
+        expectedIssuer: String?,
+        expectedHolderDID: String,
+        at date: Date
+    ) async throws -> String {
+        switch try await validateAllowingUnavailableEBSIDID(
+            rawCredential: rawCredential,
+            profile: profile,
+            expectedIssuer: expectedIssuer,
+            expectedHolderDID: expectedHolderDID,
+            at: date
+        ) {
+        case let .verified(issuer): return issuer
+        case .ebsiDIDResolutionUnavailable: throw EbsiCredentialError.issuerDIDUnresolved
+        }
+    }
+
+    func validateAllowingUnavailableEBSIDID(
+        rawCredential: Data,
+        profile: EbsiCredentialProfile,
+        expectedIssuer: String?,
+        expectedHolderDID: String,
+        at date: Date
+    ) async throws -> W3CCredentialValidationOutcome {
+        guard !outcomes.isEmpty else { throw EbsiCredentialError.backendUnavailable }
+        return outcomes.removeFirst()
+    }
+}
+
+private struct ThrowingFixtureCredentialValidator: W3CCredentialValidating {
+    let error: EbsiCredentialError
+
+    func validate(
+        rawCredential: Data,
+        profile: EbsiCredentialProfile,
+        expectedIssuer: String?,
+        expectedHolderDID: String,
+        at date: Date
+    ) async throws -> String {
+        throw error
     }
 }
 

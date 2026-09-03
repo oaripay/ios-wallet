@@ -54,6 +54,13 @@ public actor EncryptedEbsiCredentialStore: EbsiCredentialStore {
         }
     }
 
+    public func replace(id: UUID, with credential: StoredEbsiCredential) async throws {
+        guard credential.id == id else { throw WalletRepositoryError.credentialNotFound }
+        let file = fileURL(id)
+        guard files.exists(file) else { throw WalletRepositoryError.credentialNotFound }
+        try write(credential, to: file)
+    }
+
     public func delete(id: UUID) async throws {
         let file = fileURL(id)
         guard files.exists(file) else { throw WalletRepositoryError.credentialNotFound }
@@ -62,6 +69,17 @@ public actor EncryptedEbsiCredentialStore: EbsiCredentialStore {
 
     private func fileURL(_ id: UUID) -> URL {
         files.directory.appendingPathComponent(id.uuidString).appendingPathExtension("ebsi-vc")
+    }
+
+    private func write(_ credential: StoredEbsiCredential, to file: URL) throws {
+        do {
+            try files.write(
+                cipher.seal(try encoder.encode(credential), authenticating: context(credential.id)),
+                to: file
+            )
+        } catch {
+            throw WalletRepositoryError.storageFailure
+        }
     }
 
     private func context(_ id: UUID) -> Data {

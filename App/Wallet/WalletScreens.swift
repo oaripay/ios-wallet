@@ -363,39 +363,63 @@ private struct CredentialDetailView: View {
     @ObservedObject var model: WalletAppModel
     let credential: CredentialRecord
     @State private var confirmsDeletion = false
+    @State private var supportsRefresh = false
+
+    private var displayedCredential: CredentialRecord {
+        model.credentials.first(where: { $0.id == credential.id }) ?? credential
+    }
 
     var body: some View {
         NavigationStack {
             List {
                 Section {
-                    CredentialHeroCard(credential: credential)
+                    CredentialHeroCard(credential: displayedCredential)
                         .listRowInsets(EdgeInsets())
                         .listRowBackground(Color.clear)
                 }
                 Section("Status") {
-                    detailRow("Current status", model.documentStatus(for: credential) ?? "Unavailable")
-                    detailRow("Credential status", credential.status.displayText)
-                    detailRow("Issuer trust", credential.issuerTrust.rawValue)
-                    if let issuedAt = credential.issuedAt { detailRow("Issued", issuedAt.formatted(date: .abbreviated, time: .omitted)) }
-                    if let expiresAt = credential.expiresAt { detailRow("Expires", expiresAt.formatted(date: .abbreviated, time: .omitted)) }
+                    detailRow("Current status", model.documentStatus(for: displayedCredential) ?? "Unavailable")
+                    detailRow("Credential status", displayedCredential.status.displayText)
+                    detailRow("Issuer trust", displayedCredential.issuerTrust.rawValue)
+                    if let issuedAt = displayedCredential.issuedAt { detailRow("Issued", issuedAt.formatted(date: .abbreviated, time: .omitted)) }
+                    if let expiresAt = displayedCredential.expiresAt { detailRow("Expires", expiresAt.formatted(date: .abbreviated, time: .omitted)) }
                 }
                 Section("Credential") {
-                    detailRow("Format", credential.format.rawValue)
-                    detailRow("Profile", credential.profileID)
-                    detailRow("Legal profile", credential.legalClassification.rawValue)
+                    detailRow("Format", displayedCredential.format.rawValue)
+                    detailRow("Profile", displayedCredential.profileID)
+                    detailRow("Legal profile", displayedCredential.legalClassification.rawValue)
                     NavigationLink("Technical details") {
                         technicalDetails
                     }
                 }
-                if !credential.displayClaims.isEmpty {
+                if !displayedCredential.displayClaims.isEmpty {
                     Section("Claims") {
-                        ForEach(credential.displayClaims) { claim in
+                        ForEach(displayedCredential.displayClaims) { claim in
                             LabeledContent(claim.label, value: claim.value)
                         }
                     }
                 }
                 Section("Actions") {
-                    if model.documentStatus(for: credential) == "deferred" {
+                    if supportsRefresh {
+                        Button {
+                            Task { await model.refreshSelectedCredential() }
+                        } label: {
+                            Label("Refresh credential", systemImage: "arrow.triangle.2.circlepath")
+                        }
+                        .disabled(model.credentialActionIsWorking)
+                        Toggle("Automatic refresh", isOn: Binding(
+                            get: { displayedCredential.refresh.mode == .automatic },
+                            set: { enabled in
+                                Task { await model.setAutomaticRefresh(enabled, for: displayedCredential) }
+                            }
+                        ))
+                        .disabled(model.credentialActionIsWorking)
+                        LabeledContent("Refresh state", value: refreshStateText)
+                        if let date = displayedCredential.refresh.lastSuccessfulRefreshAt {
+                            LabeledContent("Last refreshed", value: date.formatted(date: .abbreviated, time: .shortened))
+                        }
+                    }
+                    if model.documentStatus(for: displayedCredential) == "deferred" {
                         Button {
                             Task { await model.retrySelectedDeferredCredential() }
                         } label: {
@@ -406,8 +430,8 @@ private struct CredentialDetailView: View {
                     Button(role: .destructive) { confirmsDeletion = true } label: {
                         Label("Remove credential", systemImage: "minus.circle")
                     }
-                        .disabled(model.credentialActionIsWorking || !model.canDeleteCredential(credential))
-                    if !model.canDeleteCredential(credential) {
+                        .disabled(model.credentialActionIsWorking || !model.canDeleteCredential(displayedCredential))
+                    if !model.canDeleteCredential(displayedCredential) {
                         Label(deletionUnavailableMessage, systemImage: "lock.shield")
                             .font(.caption)
                             .foregroundStyle(OariColor.textSecondary(scheme))
@@ -430,17 +454,32 @@ private struct CredentialDetailView: View {
         } message: {
             Text(deletionConfirmationMessage)
         }
+        .task(id: credential.id) {
+            supportsRefresh = await model.canRefreshCredential(credential)
+        }
+    }
+
+    private var refreshStateText: String {
+        switch displayedCredential.refresh.state {
+        case .idle: "Manual"
+        case .scheduled:
+            displayedCredential.refresh.nextRefreshAt.map {
+                "Scheduled \($0.formatted(date: .abbreviated, time: .shortened))"
+            } ?? "Scheduled"
+        case .refreshing: "Refreshing"
+        case .failed: "Paused after a failed attempt"
+        }
     }
 
     private var deletionConfirmationMessage: String {
-        if W3CBackendComposition.ownsCredential(backendID: credential.backendID) {
+        if W3CBackendComposition.ownsCredential(backendID: displayedCredential.backendID) {
             return "This removes the credential from encrypted W3C storage and Oari Wallet. Face ID or your device passcode will be required."
         }
         return "This removes the credential from Wallet Kit and Oari Wallet. Face ID or your device passcode will be required."
     }
 
     private var deletionUnavailableMessage: String {
-        W3CBackendComposition.ownsCredential(backendID: credential.backendID)
+        W3CBackendComposition.ownsCredential(backendID: displayedCredential.backendID)
             ? "The encrypted W3C credential reference is unavailable."
             : "Install an approved EUDI profile to manage this credential."
     }
@@ -452,13 +491,13 @@ private struct CredentialDetailView: View {
     private var technicalDetails: some View {
         List {
             Section("Identifiers") {
-                detailRow("Issuer", credential.issuerIdentifier)
-                detailRow("Backend document", credential.backendDocumentID ?? credential.walletDocumentID ?? "Unavailable")
-                detailRow("Wallet document", credential.walletDocumentID ?? "Unavailable")
+                detailRow("Issuer", displayedCredential.issuerIdentifier)
+                detailRow("Backend document", displayedCredential.backendDocumentID ?? displayedCredential.walletDocumentID ?? "Unavailable")
+                detailRow("Wallet document", displayedCredential.walletDocumentID ?? "Unavailable")
             }
             Section("Processing") {
-                detailRow("Backend", credential.backendID ?? "EUDI Wallet Kit")
-                detailRow("Configuration", credential.configurationID)
+                detailRow("Backend", displayedCredential.backendID ?? "EUDI Wallet Kit")
+                detailRow("Configuration", displayedCredential.configurationID)
             }
         }
         .listStyle(.insetGrouped)
@@ -993,6 +1032,7 @@ private extension AuditOperation {
         case .issuance: "Credential issued"
         case .presentation: "Credential presented"
         case .credentialDeletion: "Credential removed"
+        case .credentialRefresh: "Credential refreshed"
         case .keyDeletion: "Wallet key removed"
         }
     }
@@ -1002,6 +1042,7 @@ private extension AuditOperation {
         case .issuance: "person.text.rectangle"
         case .presentation: "person.badge.shield.checkmark"
         case .credentialDeletion: "trash"
+        case .credentialRefresh: "arrow.triangle.2.circlepath"
         case .keyDeletion: "key.slash"
         }
     }

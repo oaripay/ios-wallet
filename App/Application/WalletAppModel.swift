@@ -65,6 +65,7 @@ final class WalletAppModel: ObservableObject {
     private var activeOpenID4VCAllowsUntrusted = false
     private var pendingOpenID4VCSignerTrustWarning = false
     private var deferredSignerTrustWarningID: UUID?
+    private var refreshSignerTrustCredentialID: CredentialID?
     private var repositories: (credentials: any CredentialMetadataRepository, audit: any AuditRepository)?
     private var activePendingIssuanceID: UUID?
     private var activePendingIssuance: EudiPendingIssuance?
@@ -216,7 +217,10 @@ final class WalletAppModel: ObservableObject {
             }
             loadingState = .loaded
             await refreshDeferredIssuances()
-            if canPollDeferredIssuances { await resumeDeferredIssuances() }
+            if canPollDeferredIssuances {
+                await resumeDeferredIssuances()
+                await resumeAutomaticRefreshes()
+            }
             if let initializer = dependencies.eudiInitializer {
                 startEudiInitialization(using: initializer)
             }
@@ -348,11 +352,13 @@ final class WalletAppModel: ObservableObject {
                 appLockState = .unlocked
                 showsAppLockSetup = false
                 await resumeDeferredIssuances()
+                await resumeAutomaticRefreshes()
             } catch {
                 guard activeAuthenticationID == requestID else { return }
                 activeAuthenticationID = nil
                 appLockState = .disabled
                 await resumeDeferredIssuances()
+                await resumeAutomaticRefreshes()
                 appLockSetupError = "Authentication was cancelled or failed. Try again to enable app lock."
             }
         } else if isAppLockEnabled {
@@ -373,6 +379,7 @@ final class WalletAppModel: ObservableObject {
                 requiresForegroundUnlock = false
                 appLockState = .disabled
                 await resumeDeferredIssuances()
+                await resumeAutomaticRefreshes()
             } catch {
                 guard activeAuthenticationID == requestID else { return }
                 activeAuthenticationID = nil
@@ -425,6 +432,7 @@ final class WalletAppModel: ObservableObject {
             requiresForegroundUnlock = false
             appLockState = .unlocked
             await resumeDeferredIssuances()
+            await resumeAutomaticRefreshes()
         } catch {
             guard activeAuthenticationID == requestID else { return }
             activeAuthenticationID = nil
@@ -453,6 +461,7 @@ final class WalletAppModel: ObservableObject {
                 requiresForegroundUnlock = false
                 appLockState = .disabled
                 await resumeDeferredIssuances()
+                await resumeAutomaticRefreshes()
                 return
             }
             guard requiresForegroundUnlock, appLockState != .authenticating else { return }
@@ -670,6 +679,12 @@ final class WalletAppModel: ObservableObject {
             await checkDeferredIssuance(id: id, allowUntrustedSigner: true)
             return
         }
+        if let id = refreshSignerTrustCredentialID {
+            openID4VCTrustWarning = nil
+            refreshSignerTrustCredentialID = nil
+            await refreshCredential(id: id, allowUntrustedSigner: true)
+            return
+        }
         guard activeOpenID4VCInteractionID != nil else { return }
         openID4VCTrustWarning = nil
         if pendingOpenID4VCSignerTrustWarning {
@@ -693,6 +708,12 @@ final class WalletAppModel: ObservableObject {
         if deferredSignerTrustWarningID != nil {
             deferredSignerTrustWarningID = nil
             openID4VCTrustWarning = nil
+            return
+        }
+        if refreshSignerTrustCredentialID != nil {
+            refreshSignerTrustCredentialID = nil
+            openID4VCTrustWarning = nil
+            credentialActionState = .failed("Credential refresh paused until issuer trust is approved.")
             return
         }
         let id = activeOpenID4VCInteractionID
@@ -1314,6 +1335,65 @@ final class WalletAppModel: ObservableObject {
         return isEudiOperational && credential.walletDocumentID != nil
     }
 
+    func canRefreshCredential(_ credential: CredentialRecord) async -> Bool {
+        guard W3CBackendComposition.ownsCredential(backendID: credential.backendID),
+              let openID4VCWallet else { return false }
+        return await openID4VCWallet.canRefreshCredential(id: credential.id)
+    }
+
+    func refreshSelectedCredential() async {
+        guard let credential = selectedCredential else { return }
+        await refreshCredential(id: credential.id, allowUntrustedSigner: false)
+    }
+
+    func setAutomaticRefresh(_ enabled: Bool, for credential: CredentialRecord) async {
+        guard !credentialActionIsWorking, let openID4VCWallet else { return }
+        credentialActionState = .working("Updating refresh preference…")
+        do {
+            let updated = try await openID4VCWallet.setAutomaticRefresh(id: credential.id, enabled: enabled)
+            try await refreshWalletState()
+            selectedCredential = updated
+            credentialActionState = .completed(enabled ? "Automatic refresh enabled." : "Automatic refresh disabled.")
+            if enabled { await resumeAutomaticRefreshes() }
+#if os(iOS) && canImport(BackgroundTasks)
+            await CredentialMaintenanceCoordinator.shared.schedule()
+#endif
+        } catch {
+            credentialActionState = .failed(Self.safeMessage(error))
+        }
+    }
+
+    private func refreshCredential(id: CredentialID, allowUntrustedSigner: Bool) async {
+        guard !credentialActionIsWorking, let openID4VCWallet else { return }
+        credentialActionState = .working("Refreshing credential…")
+        do {
+            switch try await openID4VCWallet.refreshCredential(id: id, allowUntrustedSigner: allowUntrustedSigner) {
+            case let .completed(updated):
+                try await refreshWalletState()
+                selectedCredential = updated
+                credentialActionState = .completed("Credential refreshed.")
+            case .authorizationRequired:
+                try await refreshWalletState()
+                credentialActionState = .failed("Issuer authorization is required. Refresh remains paused.")
+            case let .signerTrustRequired(warning):
+                refreshSignerTrustCredentialID = id
+                openID4VCTrustWarning = warning
+                credentialActionState = .idle
+            case let .retryScheduled(date):
+                try await refreshWalletState()
+                credentialActionState = .failed("Refresh could not complete. Next retry: \(date.formatted(date: .abbreviated, time: .shortened)).")
+            }
+        } catch {
+            credentialActionState = .failed(Self.safeMessage(error))
+        }
+    }
+
+    private func resumeAutomaticRefreshes() async {
+        guard canPollDeferredIssuances, let openID4VCWallet else { return }
+        await openID4VCWallet.resumeEligibleAutomaticRefreshes()
+        try? await refreshWalletState()
+    }
+
     func retrySelectedDeferredCredential() async {
         guard isEudiOperational, !credentialActionIsWorking,
               let credential = selectedCredential,
@@ -1360,7 +1440,9 @@ final class WalletAppModel: ObservableObject {
 
     private func refreshWalletState() async throws {
         guard let repositories else { return }
+        let selectedID = selectedCredential?.id
         try await load(credentials: repositories.credentials, audit: repositories.audit)
+        if let selectedID { selectedCredential = credentials.first { $0.id == selectedID } }
         await refreshDeferredIssuances()
         if let eudiWallet {
             walletDocumentSummaries = Dictionary(
@@ -1450,6 +1532,8 @@ final class WalletAppModel: ObservableObject {
                 return "The issuer returned an invalid token type. Expected \(expected), received \(actual ?? "no token type")."
             case .holderIdentityRecoveryRequired:
                 return "The canonical W3C holder key is missing. Reset the W3C wallet data before continuing."
+            case .refreshCredentialMismatch:
+                return "The issuer returned a refreshed credential that does not match the stored credential."
             }
         }
         if let error = error as? EbsiCredentialError {

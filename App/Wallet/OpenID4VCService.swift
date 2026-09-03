@@ -32,6 +32,13 @@ enum OpenID4VCInteractionCompletion: Equatable, Sendable {
     case credentialSignerTrustWarning(EbsiTrustWarning)
 }
 
+enum W3CCredentialRefreshCompletion: Equatable, Sendable {
+    case completed(CredentialRecord)
+    case authorizationRequired
+    case signerTrustRequired(EbsiTrustWarning)
+    case retryScheduled(Date)
+}
+
 protocol OpenID4VCOperating: Sendable {
     func resolveInteraction(uri: String) async throws -> OpenID4VCResolvedInteraction
     func beginPresentation(uri: String) async throws -> EudiPresentationRequest
@@ -64,9 +71,19 @@ protocol OpenID4VCOperating: Sendable {
         metadataID: CredentialID,
         issuerIdentifier: String
     ) async throws
+    func canRefreshCredential(id: CredentialID) async -> Bool
+    func refreshCredential(id: CredentialID, allowUntrustedSigner: Bool) async throws -> W3CCredentialRefreshCompletion
+    func setAutomaticRefresh(id: CredentialID, enabled: Bool) async throws -> CredentialRecord
+    func refreshContinuations() async throws -> [CredentialRefreshContinuation]
+    func resumeEligibleAutomaticRefreshes() async
 }
 
 actor LiveOpenID4VCService: OpenID4VCOperating {
+    private struct PersistedRefresh: Codable, Sendable {
+        let backend: W3CCredentialRefreshContinuation
+        let pending: PendingW3CCredentialRefresh?
+        let signerWarning: PersistedSignerWarning?
+    }
     private struct PersistedDeferredContinuation: Codable {
         let backend: DeferredW3CCredential
         let signerWarning: PersistedSignerWarning?
@@ -108,6 +125,7 @@ actor LiveOpenID4VCService: OpenID4VCOperating {
     private let metadata: any CredentialMetadataRepository
     private let audit: any AuditRepository
     private let deferredRepository: any DeferredIssuanceRepository
+    private let refreshRepository: any CredentialRefreshContinuationRepository
     private var issuers: [UUID: String] = [:]
     private var authorizationRequired: Set<UUID> = []
     private var activeDeferredChecks: Set<UUID> = []
@@ -116,12 +134,14 @@ actor LiveOpenID4VCService: OpenID4VCOperating {
         backend: OpenID4VCW3CBackend,
         metadata: any CredentialMetadataRepository,
         audit: any AuditRepository,
-        deferredRepository: any DeferredIssuanceRepository
+        deferredRepository: any DeferredIssuanceRepository,
+        refreshRepository: any CredentialRefreshContinuationRepository
     ) {
         self.backend = backend
         self.metadata = metadata
         self.audit = audit
         self.deferredRepository = deferredRepository
+        self.refreshRepository = refreshRepository
     }
 
     func resolveInteraction(uri: String) async throws -> OpenID4VCResolvedInteraction {
@@ -478,6 +498,18 @@ actor LiveOpenID4VCService: OpenID4VCOperating {
                  display: credential.display
             )
             try await metadata.saveMetadata(record)
+            if let continuation = credential.refreshContinuation {
+                let now = Date()
+                try await refreshRepository.saveRefreshContinuation(CredentialRefreshContinuation(
+                    credentialID: record.id,
+                    continuation: try JSONEncoder().encode(PersistedRefresh(
+                        backend: continuation, pending: nil, signerWarning: nil
+                    )),
+                    dueAt: Self.defaultRefreshDate(for: record, now: now),
+                    createdAt: now,
+                    updatedAt: now
+                ))
+            }
             credentialIDs.append(record.id)
         }
         try await audit.append(AuditEvent(
@@ -609,6 +641,10 @@ actor LiveOpenID4VCService: OpenID4VCOperating {
     ) async throws {
         try await backend.deleteStoredCredential(id: backendID)
         try await metadata.deleteMetadata(id: metadataID)
+        for continuation in try await refreshRepository.refreshContinuations()
+            .filter({ $0.credentialID == metadataID }) {
+            try await refreshRepository.deleteRefreshContinuation(id: continuation.id)
+        }
         try await audit.append(AuditEvent(
             operation: .credentialDeletion,
             outcome: .completed,
@@ -618,5 +654,212 @@ actor LiveOpenID4VCService: OpenID4VCOperating {
             policy: .development,
             policyVersion: AuditPolicyVersion(rawValue: 1)
         ))
+    }
+
+    func canRefreshCredential(id: CredentialID) async -> Bool {
+        (try? await refreshRepository.refreshContinuations().contains { $0.credentialID == id }) ?? false
+    }
+
+    func refreshContinuations() async throws -> [CredentialRefreshContinuation] {
+        try await refreshRepository.refreshContinuations()
+    }
+
+    func setAutomaticRefresh(id: CredentialID, enabled: Bool) async throws -> CredentialRecord {
+        guard let record = try await metadata.credentials().first(where: { $0.id == id }),
+              let envelope = try await refreshRepository.refreshContinuations().first(where: { $0.credentialID == id })
+        else { throw WalletRepositoryError.refreshContinuationNotFound }
+        let dueAt = enabled ? max(envelope.dueAt, Date()) : envelope.dueAt
+        let resumedState: CredentialRefreshContinuationState = if enabled,
+            envelope.state == .failed || envelope.state == .refreshing {
+            .pending
+        } else {
+            envelope.state
+        }
+        try await refreshRepository.replaceRefreshContinuation(refreshEnvelope(
+            envelope, dueAt: dueAt,
+            state: resumedState,
+            incrementAttempts: false
+        ))
+        let updated = replacing(record, refresh: CredentialRefreshMetadata(
+            mode: enabled ? .automatic : .manual,
+            state: enabled ? .scheduled : .idle,
+            nextRefreshAt: enabled ? dueAt : nil,
+            lastAttemptAt: record.refresh.lastAttemptAt,
+            lastSuccessfulRefreshAt: record.refresh.lastSuccessfulRefreshAt,
+            consecutiveFailures: record.refresh.consecutiveFailures
+        ))
+        try await metadata.replaceMetadata(updated)
+        return updated
+    }
+
+    func refreshCredential(
+        id: CredentialID, allowUntrustedSigner: Bool = false
+    ) async throws -> W3CCredentialRefreshCompletion {
+        guard let record = try await metadata.credentials().first(where: { $0.id == id }),
+              let envelope = try await refreshRepository.refreshContinuations().first(where: { $0.credentialID == id })
+        else { throw WalletRepositoryError.refreshContinuationNotFound }
+        let persisted = try JSONDecoder().decode(PersistedRefresh.self, from: envelope.continuation)
+        if envelope.state == .signerTrustRequired, !allowUntrustedSigner,
+           let warning = persisted.signerWarning {
+            return .signerTrustRequired(warning.value)
+        }
+        let now = Date()
+        try await refreshRepository.replaceRefreshContinuation(refreshEnvelope(
+            envelope, state: .refreshing, incrementAttempts: false
+        ))
+        do {
+            let outcome = if let pending = persisted.pending {
+                try await backend.commitRefresh(pending, allowUntrustedSigner: allowUntrustedSigner)
+            } else {
+                try await backend.refreshCredential(
+                    persisted.backend,
+                    allowUntrustedSigner: allowUntrustedSigner
+                ) { [refreshRepository, envelope] rotated in
+                    try await refreshRepository.replaceRefreshContinuation(CredentialRefreshContinuation(
+                        id: envelope.id, credentialID: envelope.credentialID,
+                        continuation: try JSONEncoder().encode(PersistedRefresh(
+                            backend: rotated, pending: nil, signerWarning: nil
+                        )),
+                        dueAt: envelope.dueAt, attempts: envelope.attempts,
+                        state: .refreshing, createdAt: envelope.createdAt, updatedAt: Date()
+                    ))
+                }
+            }
+            switch outcome {
+            case let .replaced(result, rotated):
+                let next = Self.defaultRefreshDate(for: record, now: now)
+                let updated = replacing(record, issued: result, refresh: CredentialRefreshMetadata(
+                    mode: record.refresh.mode,
+                    state: record.refresh.mode == .automatic ? .scheduled : .idle,
+                    nextRefreshAt: record.refresh.mode == .automatic ? next : nil,
+                    lastAttemptAt: now, lastSuccessfulRefreshAt: now, consecutiveFailures: 0
+                ))
+                try await refreshRepository.replaceRefreshContinuation(refreshEnvelope(
+                    envelope,
+                    continuation: try JSONEncoder().encode(PersistedRefresh(
+                        backend: rotated, pending: nil, signerWarning: nil
+                    )),
+                    dueAt: next, attempts: 0, state: .pending
+                ))
+                try await metadata.replaceMetadata(updated)
+                try? await audit.append(AuditEvent(
+                    operation: .credentialRefresh, outcome: .completed, occurredAt: now,
+                    counterpartyIdentifierDigest: .sha256(updated.issuerIdentifier),
+                    credentialIDs: [id], policy: .development,
+                    policyVersion: AuditPolicyVersion(rawValue: 1)
+                ))
+                return .completed(updated)
+            case let .signerTrustRequired(warning, pending):
+                try await refreshRepository.replaceRefreshContinuation(refreshEnvelope(
+                    envelope,
+                    continuation: try JSONEncoder().encode(PersistedRefresh(
+                        backend: pending.continuation, pending: pending,
+                        signerWarning: PersistedSignerWarning(warning)
+                    )), state: .signerTrustRequired
+                ))
+                try await metadata.replaceMetadata(replacing(record, refresh: CredentialRefreshMetadata(
+                    mode: record.refresh.mode, state: .failed, nextRefreshAt: nil,
+                    lastAttemptAt: now,
+                    lastSuccessfulRefreshAt: record.refresh.lastSuccessfulRefreshAt,
+                    consecutiveFailures: record.refresh.consecutiveFailures
+                )))
+                return .signerTrustRequired(warning)
+            case let .authorizationRequired(continuation):
+                try await refreshRepository.replaceRefreshContinuation(refreshEnvelope(
+                    envelope,
+                    continuation: try JSONEncoder().encode(PersistedRefresh(
+                        backend: continuation, pending: nil, signerWarning: nil
+                    )), state: .authorizationRequired
+                ))
+                try await metadata.replaceMetadata(replacing(record, refresh: CredentialRefreshMetadata(
+                    mode: record.refresh.mode, state: .failed, nextRefreshAt: nil,
+                    lastAttemptAt: now,
+                    lastSuccessfulRefreshAt: record.refresh.lastSuccessfulRefreshAt,
+                    consecutiveFailures: record.refresh.consecutiveFailures
+                )))
+                return .authorizationRequired
+            }
+        } catch {
+            let currentEnvelope = (try? await refreshRepository.refreshContinuations()
+                .first(where: { $0.id == envelope.id })) ?? envelope
+            let failures = record.refresh.consecutiveFailures + 1
+            if record.refresh.mode == .automatic && Self.isTransient(error) && failures <= 6 {
+                let retryAt = now.addingTimeInterval(Self.backoff(after: failures))
+                try? await refreshRepository.replaceRefreshContinuation(refreshEnvelope(
+                    currentEnvelope, dueAt: retryAt, state: .pending
+                ))
+                try? await metadata.replaceMetadata(replacing(record, refresh: CredentialRefreshMetadata(
+                    mode: record.refresh.mode, state: .failed,
+                    nextRefreshAt: record.refresh.mode == .automatic ? retryAt : nil,
+                    lastAttemptAt: now,
+                    lastSuccessfulRefreshAt: record.refresh.lastSuccessfulRefreshAt,
+                    consecutiveFailures: failures
+                )))
+                return .retryScheduled(retryAt)
+            }
+            try? await refreshRepository.replaceRefreshContinuation(refreshEnvelope(currentEnvelope, state: .failed))
+            try? await metadata.replaceMetadata(replacing(record, refresh: CredentialRefreshMetadata(
+                mode: record.refresh.mode,
+                state: .failed,
+                nextRefreshAt: nil,
+                lastAttemptAt: now,
+                lastSuccessfulRefreshAt: record.refresh.lastSuccessfulRefreshAt,
+                consecutiveFailures: failures
+            )))
+            throw error
+        }
+    }
+
+    func resumeEligibleAutomaticRefreshes() async {
+        guard let records = try? await metadata.credentials(),
+              let continuations = try? await refreshRepository.refreshContinuations() else { return }
+        let automatic = Dictionary(uniqueKeysWithValues: records.filter { $0.refresh.mode == .automatic }.map { ($0.id, $0) })
+        let eligible = continuations.filter {
+            ($0.state == .pending || $0.state == .refreshing)
+                && $0.dueAt <= Date() && automatic[$0.credentialID] != nil
+        }
+        for continuation in eligible.prefix(20) {
+            _ = try? await refreshCredential(id: continuation.credentialID, allowUntrustedSigner: false)
+        }
+    }
+
+    private func refreshEnvelope(
+        _ value: CredentialRefreshContinuation, continuation: Data? = nil,
+        dueAt: Date? = nil, attempts: Int? = nil,
+        state: CredentialRefreshContinuationState, incrementAttempts: Bool = true
+    ) -> CredentialRefreshContinuation {
+        CredentialRefreshContinuation(
+            id: value.id, credentialID: value.credentialID,
+            continuation: continuation ?? value.continuation,
+            dueAt: dueAt ?? value.dueAt,
+            attempts: attempts ?? value.attempts + (incrementAttempts ? 1 : 0),
+            state: state, createdAt: value.createdAt, updatedAt: Date()
+        )
+    }
+
+    private static func defaultRefreshDate(for record: CredentialRecord, now: Date) -> Date {
+        max(now.addingTimeInterval(3600), record.expiresAt?.addingTimeInterval(-7 * 86_400) ?? now.addingTimeInterval(86_400))
+    }
+
+    private func replacing(
+        _ record: CredentialRecord, issued: IssuedW3CCredential? = nil,
+        refresh: CredentialRefreshMetadata
+    ) -> CredentialRecord {
+        CredentialRecord(
+            id: record.id, configurationID: issued?.configurationID ?? record.configurationID,
+            walletDocumentID: record.walletDocumentID, backendID: record.backendID,
+            backendDocumentID: issued?.id.uuidString ?? record.backendDocumentID,
+            displayName: issued?.displayName ?? record.displayName,
+            format: issued.map { $0.representation == .dcSdJwt || $0.representation == .vcdm2SdJwt ? .sdJWTVC : .jwtVC } ?? record.format,
+            profileID: issued?.profileID ?? record.profileID,
+            issuerIdentifier: issued?.issuerIdentifier ?? record.issuerIdentifier,
+            subjectIdentifier: record.subjectIdentifier, holderBinding: record.holderBinding,
+            cryptographicValidity: .valid, issuerTrust: record.issuerTrust,
+            status: issued.map { $0.hasStatusReference ? .notEvaluated : .notProvided } ?? record.status,
+            legalClassification: record.legalClassification, issuedAt: record.issuedAt,
+            expiresAt: record.expiresAt, createdAt: record.createdAt,
+            displayClaims: issued?.displayClaims ?? record.displayClaims,
+            display: issued?.display ?? record.display, refresh: refresh
+        )
     }
 }

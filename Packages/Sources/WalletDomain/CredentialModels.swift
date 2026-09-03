@@ -120,6 +120,45 @@ public struct HolderBinding: Codable, Equatable, Sendable {
     }
 }
 
+public enum CredentialRefreshMode: String, Codable, Equatable, Sendable {
+    case manual
+    case automatic
+}
+
+public enum CredentialRefreshState: String, Codable, Equatable, Sendable {
+    case idle
+    case scheduled
+    case refreshing
+    case failed
+}
+
+public struct CredentialRefreshMetadata: Codable, Equatable, Sendable {
+    public let mode: CredentialRefreshMode
+    public let state: CredentialRefreshState
+    public let nextRefreshAt: Date?
+    public let lastAttemptAt: Date?
+    public let lastSuccessfulRefreshAt: Date?
+    public let consecutiveFailures: Int
+
+    public init(
+        mode: CredentialRefreshMode = .manual,
+        state: CredentialRefreshState = .idle,
+        nextRefreshAt: Date? = nil,
+        lastAttemptAt: Date? = nil,
+        lastSuccessfulRefreshAt: Date? = nil,
+        consecutiveFailures: Int = 0
+    ) {
+        self.mode = mode
+        self.state = state
+        self.nextRefreshAt = nextRefreshAt
+        self.lastAttemptAt = lastAttemptAt
+        self.lastSuccessfulRefreshAt = lastSuccessfulRefreshAt
+        self.consecutiveFailures = consecutiveFailures
+    }
+
+    public static let manual = CredentialRefreshMetadata()
+}
+
 public struct CredentialRecord: Codable, Equatable, Identifiable, Sendable {
     public let id: CredentialID
     public let configurationID: String
@@ -141,6 +180,7 @@ public struct CredentialRecord: Codable, Equatable, Identifiable, Sendable {
     public let createdAt: Date
     public let displayClaims: [CredentialDisplayClaim]
     public let display: CredentialDisplayMetadata?
+    public let refresh: CredentialRefreshMetadata
 
     public init(
         id: CredentialID = CredentialID(),
@@ -162,7 +202,8 @@ public struct CredentialRecord: Codable, Equatable, Identifiable, Sendable {
         expiresAt: Date? = nil,
         createdAt: Date,
         displayClaims: [CredentialDisplayClaim] = [],
-        display: CredentialDisplayMetadata? = nil
+        display: CredentialDisplayMetadata? = nil,
+        refresh: CredentialRefreshMetadata = .manual
     ) {
         self.id = id
         self.configurationID = configurationID
@@ -184,5 +225,38 @@ public struct CredentialRecord: Codable, Equatable, Identifiable, Sendable {
         self.createdAt = createdAt
         self.displayClaims = displayClaims
         self.display = display
+        self.refresh = refresh
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, configurationID, walletDocumentID, backendID, backendDocumentID, displayName
+        case format, profileID, issuerIdentifier, subjectIdentifier, holderBinding
+        case cryptographicValidity, issuerTrust, status, legalClassification, issuedAt, expiresAt
+        case createdAt, displayClaims, display, refresh
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        id = try values.decode(CredentialID.self, forKey: .id)
+        configurationID = try values.decode(String.self, forKey: .configurationID)
+        walletDocumentID = try values.decodeIfPresent(String.self, forKey: .walletDocumentID)
+        backendID = try values.decodeIfPresent(String.self, forKey: .backendID)
+        backendDocumentID = try values.decodeIfPresent(String.self, forKey: .backendDocumentID)
+        displayName = try values.decode(String.self, forKey: .displayName)
+        format = try values.decode(CredentialFormat.self, forKey: .format)
+        profileID = try values.decode(String.self, forKey: .profileID)
+        issuerIdentifier = try values.decode(String.self, forKey: .issuerIdentifier)
+        subjectIdentifier = try values.decodeIfPresent(String.self, forKey: .subjectIdentifier)
+        holderBinding = try values.decodeIfPresent(HolderBinding.self, forKey: .holderBinding)
+        cryptographicValidity = try values.decode(CryptographicValidity.self, forKey: .cryptographicValidity)
+        issuerTrust = try values.decode(IssuerTrustState.self, forKey: .issuerTrust)
+        status = try values.decode(CredentialStatusState.self, forKey: .status)
+        legalClassification = try values.decode(LegalClassification.self, forKey: .legalClassification)
+        issuedAt = try values.decodeIfPresent(Date.self, forKey: .issuedAt)
+        expiresAt = try values.decodeIfPresent(Date.self, forKey: .expiresAt)
+        createdAt = try values.decode(Date.self, forKey: .createdAt)
+        displayClaims = try values.decode([CredentialDisplayClaim].self, forKey: .displayClaims)
+        display = try values.decodeIfPresent(CredentialDisplayMetadata.self, forKey: .display)
+        refresh = try values.decodeIfPresent(CredentialRefreshMetadata.self, forKey: .refresh) ?? .manual
     }
 }

@@ -12,6 +12,7 @@ struct AppConfiguration: Sendable {
     let fixture: Fixture
     let incomingURL: URL?
     let disablesAnimations: Bool
+    let isUITesting: Bool
 
     static func current(
         arguments: [String] = ProcessInfo.processInfo.arguments
@@ -33,7 +34,8 @@ struct AppConfiguration: Sendable {
             allowedHosts: allowedHosts,
             fixture: fixture,
             incomingURL: incomingURL,
-            disablesAnimations: arguments.contains("--disable-animations")
+            disablesAnimations: arguments.contains("--disable-animations"),
+            isUITesting: arguments.contains("--ui-tests")
         )
     }
 

@@ -76,6 +76,10 @@ targets:
         NSCameraUsageDescription: Scan credential offers and presentation requests.
         NSBluetoothAlwaysUsageDescription: Oari Wallet uses Bluetooth to securely exchange mobile documents with nearby devices during wallet presentations.
         ITSAppUsesNonExemptEncryption: false
+        BGTaskSchedulerPermittedIdentifiers:
+          - io.oari.wallet.credential-maintenance
+        UIBackgroundModes:
+          - fetch
         CFBundleURLTypes:
           - CFBundleURLName: io.oari.wallet.openid4vp
             CFBundleURLSchemes:

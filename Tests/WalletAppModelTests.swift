@@ -135,6 +135,7 @@ struct WalletAppModelTests {
         #expect(W3CBackendComposition.authorizationClientID == "io.oari.wallet")
         #expect(W3CBackendComposition.authorizationRedirectURI.absoluteString == "https://wallet.ios.oari.io/oauth/callback")
         #expect(try W3CBackendComposition.additionalProfiles().map(\.id) == [
+            "vcdm2-jwt-vc-json",
             "ebsi-vcdm11-jwt-vc",
             "ietf-dc-sd-jwt-vc",
             "ebsi-vcdm2-sd-jwt",
@@ -214,6 +215,8 @@ struct WalletAppModelTests {
             eudiAvailability: .configurationRequired("Unavailable"),
             openID4VCWallet: nil
         )))
+        await restartedAuthenticator.waitForCallCount(1)
+        await Task.yield()
         #expect(restarted.appLockState == .unlocked)
         #expect(await restartedAuthenticator.callCount == 1)
     }
@@ -1113,7 +1116,7 @@ struct WalletAppModelTests {
             await model.submitPresentation(accepted: true)
             await openID4VC.waitForWebAuthorizationPoll()
 
-            #expect(model.pendingExternalURL == web.authorizationURL)
+            #expect(model.webAuthorizationURL == web.authorizationURL)
             await model.cancelOpenID4VCTrustWarning()
         }
     }
@@ -1326,6 +1329,15 @@ private actor FixtureOpenID4VCWallet: OpenID4VCOperating {
     ) async throws {
         deletedCredentials.append((backendID, metadataID))
     }
+    func canRefreshCredential(id: CredentialID) async -> Bool { false }
+    func refreshCredential(
+        id: CredentialID, allowUntrustedSigner: Bool
+    ) async throws -> W3CCredentialRefreshCompletion { throw TestFailure.unavailable }
+    func setAutomaticRefresh(id: CredentialID, enabled: Bool) async throws -> CredentialRecord {
+        throw TestFailure.unavailable
+    }
+    func refreshContinuations() async throws -> [CredentialRefreshContinuation] { [] }
+    func resumeEligibleAutomaticRefreshes() async {}
 }
 
 private actor FixtureEudiWallet: EudiWalletOperating {
@@ -1486,6 +1498,10 @@ private actor FixtureAppLockAuthenticator: AppLockAuthenticating {
     func authenticateAppLock(reason: String) async throws {
         callCount += 1
         if shouldFail { throw TestFailure.unavailable }
+    }
+
+    func waitForCallCount(_ expected: Int) async {
+        while callCount < expected { await Task.yield() }
     }
 }
 

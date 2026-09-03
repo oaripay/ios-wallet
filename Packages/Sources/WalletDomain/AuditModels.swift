@@ -17,6 +17,7 @@ public enum AuditOperation: String, Codable, Sendable {
     case issuance
     case presentation
     case credentialDeletion
+    case credentialRefresh
     case keyDeletion
 }
 

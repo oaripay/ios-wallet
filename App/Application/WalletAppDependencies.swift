@@ -20,6 +20,36 @@ struct WalletAppDependencies: Sendable {
     let eudiInitializer: EudiInitializer?
     let openID4VCWallet: (any OpenID4VCOperating)?
 
+    var deferredIssuanceMaintenance: DeferredIssuanceMaintenance? {
+        guard let openID4VCWallet else { return nil }
+        return DeferredIssuanceMaintenance(
+            nextDeadline: {
+                try? await openID4VCWallet.deferredIssuances()
+                    .filter { $0.state == .pending }
+                    .map(\.nextAttemptAt)
+                    .min()
+            },
+            operation: { await openID4VCWallet.resumeEligibleDeferredIssuances() }
+        )
+    }
+
+    var automaticRefreshMaintenance: DeferredIssuanceMaintenance? {
+        guard let openID4VCWallet else { return nil }
+        return DeferredIssuanceMaintenance(
+            nextDeadline: {
+                let automaticIDs = Set((try? await self.credentials.credentials())?
+                    .filter { $0.refresh.mode == .automatic }.map(\.id) ?? [])
+                return try? await openID4VCWallet.refreshContinuations()
+                    .filter {
+                        automaticIDs.contains($0.credentialID)
+                            && ($0.state == .pending || $0.state == .refreshing)
+                    }
+                    .map(\.dueAt).min()
+            },
+            operation: { await openID4VCWallet.resumeEligibleAutomaticRefreshes() }
+        )
+    }
+
     init(
         credentials: any CredentialMetadataRepository,
         audit: any AuditRepository,
@@ -167,6 +197,10 @@ struct WalletAppDependencies: Sendable {
             directory: root.appendingPathComponent("deferred-issuance", isDirectory: true),
             keyStore: keyStore
         )
+        let refreshRepository = try EncryptedCredentialRefreshContinuationRepository(
+            directory: root.appendingPathComponent("credential-refresh", isDirectory: true),
+            keyStore: keyStore
+        )
         let backend = OpenID4VCW3CBackend(
             transport: transport,
             trustEvaluator: HTTPSCredentialIssuerServiceTrustEvaluator(),
@@ -201,7 +235,8 @@ struct WalletAppDependencies: Sendable {
             backend: backend,
             metadata: metadataRepository,
             audit: auditRepository,
-            deferredRepository: deferredRepository
+            deferredRepository: deferredRepository,
+            refreshRepository: refreshRepository
         )
     }
 
@@ -251,6 +286,11 @@ struct WalletAppDependencies: Sendable {
         )
     }
 #endif
+}
+
+struct DeferredIssuanceMaintenance: Sendable {
+    let nextDeadline: @Sendable () async -> Date?
+    let operation: @Sendable () async throws -> Void
 }
 
 enum EudiInitializationResult: Sendable {

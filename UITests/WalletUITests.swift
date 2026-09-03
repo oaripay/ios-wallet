@@ -122,7 +122,7 @@ final class WalletUITests: XCTestCase {
         additionalArguments: [String] = []
     ) -> XCUIApplication {
         let app = XCUIApplication()
-        app.launchArguments = ["--fixture", fixture, "--disable-animations"] + additionalArguments
+        app.launchArguments = ["--fixture", fixture, "--disable-animations", "--ui-tests"] + additionalArguments
         app.launch()
         return app
     }

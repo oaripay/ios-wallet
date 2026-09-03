@@ -12,6 +12,7 @@
 		17720D8DDE4ECE295FC2F85C /* ProtocolEngine in Frameworks */ = {isa = PBXBuildFile; productRef = 9265AFC7F1BD144B84E537E1 /* ProtocolEngine */; };
 		19C8E576FC6C967F662642B3 /* EudiReferenceDemoConfigurationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E7D538593C4F633BF3F4A85A /* EudiReferenceDemoConfigurationTests.swift */; };
 		1BB8DAD1FBD782E5EF65E35F /* AppConfiguration.swift in Sources */ = {isa = PBXBuildFile; fileRef = EDE0B466C06C9A83F0B96402 /* AppConfiguration.swift */; };
+		2477B390A0E14EBAB2500E01 /* CredentialMaintenanceCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2477B390A0E14EBAB2500E02 /* CredentialMaintenanceCoordinator.swift */; };
 		2987A6871999EA431534789E /* WalletVault in Frameworks */ = {isa = PBXBuildFile; productRef = 1C2BC55F8C4AD87C59681B4D /* WalletVault */; };
 		3E54C6BBA77BB4407A664F2E /* EudiReferenceDemoConfiguration.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2089D4672839DD02C215BFA /* EudiReferenceDemoConfiguration.swift */; };
 		56AC9B51A77EB269F7C93EEB /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = AC752FBC05CF634F1B02FCD2 /* PrivacyInfo.xcprivacy */; };
@@ -59,6 +60,7 @@
 		06ABCD0EEEA385B44E0E33E3 /* EudiFlowView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EudiFlowView.swift; sourceTree = "<group>"; };
 		224B56402382ABFCD8039AA8 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		23A185124BFC23810801CEC1 /* OariWalletApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OariWalletApp.swift; sourceTree = "<group>"; };
+		2477B390A0E14EBAB2500E02 /* CredentialMaintenanceCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CredentialMaintenanceCoordinator.swift; sourceTree = "<group>"; };
 		286031545802A58CB1A31335 /* WalletUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WalletUITests.swift; sourceTree = "<group>"; };
 		28E7C044AA3C524CAEC5A267 /* AppIcon.icon */ = {isa = PBXFileReference; lastKnownFileType = wrapper.icon; path = AppIcon.icon; sourceTree = "<group>"; };
 		3E9F8E56550C5E924AEE7786 /* WalletRootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WalletRootView.swift; sourceTree = "<group>"; };
@@ -167,6 +169,7 @@
 			isa = PBXGroup;
 			children = (
 				EDE0B466C06C9A83F0B96402 /* AppConfiguration.swift */,
+				2477B390A0E14EBAB2500E02 /* CredentialMaintenanceCoordinator.swift */,
 				23A185124BFC23810801CEC1 /* OariWalletApp.swift */,
 				D762A0C443533ADDF34A33F6 /* WalletAppDependencies.swift */,
 				8542411F919BDCF644BA9608 /* WalletAppModel.swift */,
@@ -360,6 +363,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				1BB8DAD1FBD782E5EF65E35F /* AppConfiguration.swift in Sources */,
+				2477B390A0E14EBAB2500E01 /* CredentialMaintenanceCoordinator.swift in Sources */,
 				66D008AA58F216596C073300 /* CameraQRScannerView.swift in Sources */,
 				D18A95A7B7FD98ACDA72A7F7 /* EudiFlowView.swift in Sources */,
 				D3B7E4A1C8F65290B4E6D713 /* InAppBrowserView.swift in Sources */,
@@ -496,7 +500,7 @@
 				CODE_SIGN_ENTITLEMENTS = App/Resources/OariWallet.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CODE_SIGN_STYLE = Automatic;
-				DEVELOPMENT_TEAM = "";
+				DEVELOPMENT_TEAM = 5JT6DK4C4M;
 				ENABLE_PREVIEWS = YES;
 				ENABLE_TESTABILITY = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -657,7 +661,7 @@
 				CODE_SIGN_ENTITLEMENTS = App/Resources/OariWallet.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CODE_SIGN_STYLE = Automatic;
-				DEVELOPMENT_TEAM = "";
+				DEVELOPMENT_TEAM = 5JT6DK4C4M;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = App/Resources/Info.plist;
@@ -743,7 +747,7 @@
 				CODE_SIGN_ENTITLEMENTS = App/Resources/OariWallet.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CODE_SIGN_STYLE = Automatic;
-				DEVELOPMENT_TEAM = "";
+				DEVELOPMENT_TEAM = 5JT6DK4C4M;
 				ENABLE_PREVIEWS = YES;
 				ENABLE_TESTABILITY = YES;
 				GENERATE_INFOPLIST_FILE = NO;

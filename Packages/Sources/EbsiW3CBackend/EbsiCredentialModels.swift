@@ -164,6 +164,16 @@ public protocol EbsiCredentialStore: Sendable {
     func credentials() async throws -> [StoredEbsiCredential]
     func save(_ credential: StoredEbsiCredential) async throws
     func delete(id: UUID) async throws
+    /// Implementations used for refresh must commit this as one durable replacement.
+    func replace(id: UUID, with credential: StoredEbsiCredential) async throws
+}
+
+public extension EbsiCredentialStore {
+    func replace(id: UUID, with credential: StoredEbsiCredential) async throws {
+        guard id == credential.id else { throw EbsiCredentialError.malformedCredential }
+        try await delete(id: id)
+        try await save(credential)
+    }
 }
 
 public struct EbsiCredentialInspector: Sendable {

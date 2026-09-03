@@ -100,6 +100,8 @@ public enum WalletRepositoryError: Error, Equatable, Sendable {
     case credentialNotFound
     case duplicateDeferredIssuance
     case deferredIssuanceNotFound
+    case duplicateRefreshContinuation
+    case refreshContinuationNotFound
     case keyNotFound
     case unsupportedAlgorithm
     case userAuthenticationRequired

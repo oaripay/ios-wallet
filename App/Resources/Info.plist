@@ -53,6 +53,14 @@
 	<string>1</string>
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
+	<key>BGTaskSchedulerPermittedIdentifiers</key>
+	<array>
+		<string>io.oari.wallet.credential-maintenance</string>
+	</array>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>fetch</string>
+	</array>
 	<key>NSBluetoothAlwaysUsageDescription</key>
 	<string>Oari Wallet uses Bluetooth to securely exchange mobile documents with nearby devices during wallet presentations.</string>
 	<key>NSCameraUsageDescription</key>

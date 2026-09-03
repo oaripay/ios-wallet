@@ -2,13 +2,21 @@ import SwiftUI
 import OariDesignSystem
 
 @main
+@MainActor
 struct OariWalletApp: App {
     @Environment(\.scenePhase) private var scenePhase
     @StateObject private var model: WalletAppModel
     private let configuration: AppConfiguration
 
     init() {
+#if os(iOS) && canImport(BackgroundTasks)
+        CredentialMaintenanceCoordinator.shared.register()
+#endif
         let configuration = AppConfiguration.current()
+        if configuration.isUITesting {
+            UserDefaults.standard.set(false, forKey: "oari.security.app-lock.enabled")
+            UserDefaults.standard.set(true, forKey: "oari.security.app-lock.setup-completed")
+        }
         self.configuration = configuration
         _model = StateObject(
             wrappedValue: WalletAppModel(
@@ -53,7 +61,14 @@ struct OariWalletApp: App {
                     .presentationDetents([.medium])
             }
             .onChange(of: scenePhase) { _, phase in
-                Task { await model.handleScenePhase(appLifecyclePhase(phase)) }
+                Task {
+                    await model.handleScenePhase(appLifecyclePhase(phase))
+#if os(iOS) && canImport(BackgroundTasks)
+                    if phase == .background {
+                        await CredentialMaintenanceCoordinator.shared.schedule()
+                    }
+#endif
+                }
             }
             .transaction { transaction in
                 if configuration.disablesAnimations { transaction.disablesAnimations = true }
@@ -91,6 +106,20 @@ struct OariWalletApp: App {
         case let .success(value): .success(value)
         case let .failure(error): .failure(error)
         }
+#if os(iOS) && canImport(BackgroundTasks)
+        if case let .success(value) = dependencies, let maintenance = value.deferredIssuanceMaintenance {
+            CredentialMaintenanceCoordinator.shared.installDeferredIssuance(
+                nextDeadline: maintenance.nextDeadline,
+                operation: maintenance.operation
+            )
+        }
+        if case let .success(value) = dependencies, let maintenance = value.automaticRefreshMaintenance {
+            CredentialMaintenanceCoordinator.shared.installAutomaticRefresh(
+                nextDeadline: maintenance.nextDeadline,
+                operation: maintenance.operation
+            )
+        }
+#endif
         await model.handleScenePhase(appLifecyclePhase(scenePhase))
         await model.load(dependencies)
         if let incomingURL = configuration.incomingURL { model.handleIncomingURL(incomingURL) }

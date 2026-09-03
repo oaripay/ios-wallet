@@ -238,6 +238,43 @@ struct EbsiCredentialModelsTests {
         #expect(payload["vct"] == .string("urn:example:pid"))
     }
 
+    @Test("Native validator downgrades only unavailable did:ebsi resolution")
+    func unavailableEBSIResolutionOutcome() async throws {
+        let issuer = "did:ebsi:zyUnavailableIssuer"
+        let holder = "did:key:zHolder"
+        let token = try compactJWT(
+            header: ["alg": "ES256", "typ": "vc+jwt"],
+            payload: [
+                "@context": ["https://www.w3.org/ns/credentials/v2"],
+                "type": ["VerifiableCredential", "EmployeeCredential"],
+                "issuer": issuer,
+                "iss": issuer,
+                "credentialSubject": ["id": holder],
+                "validFrom": "2027-01-15T07:59:00Z",
+                "validUntil": "2027-01-15T08:01:00Z",
+            ]
+        )
+        let validator = NativeW3CCredentialValidator(resolver: UnavailableDIDResolver())
+        let outcome = try await validator.validateAllowingUnavailableEBSIDID(
+            rawCredential: Data(token.utf8),
+            profile: .vcdm2JWTVC(),
+            expectedIssuer: nil,
+            expectedHolderDID: holder,
+            at: Date(timeIntervalSince1970: 1_800_000_000)
+        )
+        #expect(outcome == .ebsiDIDResolutionUnavailable(issuer: issuer))
+
+        await #expect(throws: EbsiCredentialError.issuerDIDUnresolved) {
+            try await validator.validate(
+                rawCredential: Data(token.utf8),
+                profile: .vcdm2JWTVC(),
+                expectedIssuer: nil,
+                expectedHolderDID: holder,
+                at: Date(timeIntervalSince1970: 1_800_000_000)
+            )
+        }
+    }
+
     private func compactJWT(header: Any, payload: Any) throws -> String {
         func encode(_ value: Any) throws -> String {
             try JSONSerialization.data(withJSONObject: value, options: [.sortedKeys])
@@ -270,5 +307,11 @@ struct EbsiCredentialModelsTests {
             .replacingOccurrences(of: "/", with: "_")
             .replacingOccurrences(of: "=", with: "")
         return "\(header).\(claims).\(signature)"
+    }
+}
+
+private struct UnavailableDIDResolver: DIDResolver {
+    func resolve(_ did: String) async throws -> DIDDocument {
+        throw DIDResolutionError.registryUnavailable
     }
 }
