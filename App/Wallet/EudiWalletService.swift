@@ -17,6 +17,7 @@ protocol EudiWalletOperating: Sendable {
     func completePresentation(
         id: UUID,
         pendingIssuanceID: UUID?,
+        selectedOptionID: String?,
         selectedClaimIDs: Set<String>,
         userAccepted: Bool
     ) async throws -> EudiPresentationCompletion
@@ -65,11 +66,13 @@ actor LiveEudiWalletService: EudiWalletOperating {
     func completePresentation(
         id: UUID,
         pendingIssuanceID: UUID?,
+        selectedOptionID: String?,
         selectedClaimIDs: Set<String>,
         userAccepted: Bool
     ) async throws -> EudiPresentationCompletion {
         let result = try await adapter.submitPresentation(
             id: id,
+            selectedOptionID: selectedOptionID,
             selectedClaimIDs: selectedClaimIDs,
             userAccepted: userAccepted
         )

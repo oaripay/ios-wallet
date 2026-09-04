@@ -1193,6 +1193,7 @@ struct WalletAppModelTests {
 private enum TestFailure: Error { case unavailable }
 
 private actor FixtureOpenID4VCWallet: OpenID4VCOperating {
+    func backfillCredentialValidity() async {}
     let interactionID: UUID
     let outcome: EbsiTrustGateOutcome
     private(set) var continueCalls: [Bool] = []
@@ -1255,6 +1256,7 @@ private actor FixtureOpenID4VCWallet: OpenID4VCOperating {
     }
     func completePresentation(
         id: UUID,
+        selectedOptionID: String?,
         selectedClaimIDs: Set<String>,
         userAccepted: Bool
     ) async throws -> URL? {
@@ -1292,6 +1294,7 @@ private actor FixtureOpenID4VCWallet: OpenID4VCOperating {
     }
     func completePIDPresentation(
         id: UUID,
+        selectedOptionID: String?,
         selectedClaimIDs: Set<String>,
         userAccepted: Bool
     ) async throws -> OpenID4VCInteractionCompletion {
@@ -1410,6 +1413,7 @@ private actor FixtureEudiWallet: EudiWalletOperating {
     }
     func submitPresentation(
         id: UUID,
+        selectedOptionID: String?,
         selectedClaimIDs: Set<String>,
         userAccepted: Bool
     ) async throws -> EudiPresentationResult { throw TestFailure.unavailable }
@@ -1421,6 +1425,7 @@ private actor FixtureEudiWallet: EudiWalletOperating {
     func completePresentation(
         id: UUID,
         pendingIssuanceID: UUID?,
+        selectedOptionID: String?,
         selectedClaimIDs: Set<String>,
         userAccepted: Bool
     ) async throws -> EudiPresentationCompletion {

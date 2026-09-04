@@ -68,6 +68,83 @@ private final class DeferredTestClock: @unchecked Sendable {
 }
 
 struct OpenID4VCW3CBackendTests {
+    @Test("JWT VC 1.1 extracts VC dates and NumericDate fallbacks")
+    func jwtVC11Validity() async throws {
+        let preferredFrom = Date(timeIntervalSince1970: 1_800_000_000)
+        let preferredUntil = Date(timeIntervalSince1970: 1_800_003_600)
+        let preferred = try Self.compactJWT(payload: [
+            "vc": [
+                "issuanceDate": "2027-01-15T08:00:00Z",
+                "expirationDate": "2027-01-15T09:00:00Z",
+            ],
+            "nbf": 1, "exp": 2,
+        ])
+        let fallback = try Self.compactJWT(payload: ["vc": [:], "nbf": 1_800_000_000, "exp": 1_800_003_600])
+
+        let preferredResult = try await Self.issueCredential(
+            preferred, format: "jwt_vc_json", profile: .vcdm11Jwt()
+        )
+        let fallbackResult = try await Self.issueCredential(
+            fallback, format: "jwt_vc_json", profile: .vcdm11Jwt()
+        )
+        #expect(preferredResult.validFrom == preferredFrom)
+        #expect(preferredResult.validUntil == preferredUntil)
+        #expect(fallbackResult.validFrom == preferredFrom)
+        #expect(fallbackResult.validUntil == preferredUntil)
+    }
+
+    @Test("JWT VC 2.0 extracts VC dates and NumericDate fallbacks")
+    func jwtVC20Validity() async throws {
+        let expectedFrom = Date(timeIntervalSince1970: 1_800_000_000)
+        let expectedUntil = Date(timeIntervalSince1970: 1_800_003_600)
+        let preferred = try Self.compactJWT(payload: [
+            "validFrom": "2027-01-15T08:00:00Z", "validUntil": "2027-01-15T09:00:00Z",
+            "nbf": 1, "exp": 2,
+        ])
+        let fallback = try Self.compactJWT(payload: ["nbf": 1_800_000_000, "exp": 1_800_003_600])
+
+        let preferredResult = try await Self.issueCredential(
+            preferred, format: "application/vc+jwt", profile: .vcdm2JWTVC()
+        )
+        let fallbackResult = try await Self.issueCredential(
+            fallback, format: "application/vc+jwt", profile: .vcdm2JWTVC()
+        )
+        #expect(preferredResult.validFrom == expectedFrom)
+        #expect(preferredResult.validUntil == expectedUntil)
+        #expect(fallbackResult.validFrom == expectedFrom)
+        #expect(fallbackResult.validUntil == expectedUntil)
+    }
+
+    @Test("SD-JWT extracts nbf or iat and exp")
+    func sdJWTValidity() async throws {
+        let expectedFrom = Date(timeIntervalSince1970: 1_800_000_000)
+        let expectedUntil = Date(timeIntervalSince1970: 1_800_003_600)
+        let nbf = try Self.compactJWT(payload: [
+            "nbf": 1_800_000_000, "iat": 1, "exp": 1_800_003_600,
+        ]) + "~"
+        let iat = try Self.compactJWT(payload: ["iat": 1_800_000_000, "exp": 1_800_003_600]) + "~"
+
+        let nbfResult = try await Self.issueCredential(nbf, format: "dc+sd-jwt", profile: .dcSdJWTVC())
+        let iatResult = try await Self.issueCredential(iat, format: "dc+sd-jwt", profile: .dcSdJWTVC())
+        #expect(nbfResult.validFrom == expectedFrom)
+        #expect(nbfResult.validUntil == expectedUntil)
+        #expect(iatResult.validFrom == expectedFrom)
+        #expect(iatResult.validUntil == expectedUntil)
+    }
+
+    @Test("Malformed string and NumericDate validity values are rejected")
+    func malformedValidity() async throws {
+        let malformedDate = try Self.compactJWT(payload: ["validFrom": "not-a-date"])
+        let malformedNumber = try Self.compactJWT(payload: ["nbf": "1800000000"])
+        for credential in [malformedDate, malformedNumber] {
+            await #expect(throws: EbsiCredentialError.malformedCredential) {
+                _ = try await Self.issueCredential(
+                    credential, format: "application/vc+jwt", profile: .vcdm2JWTVC()
+                )
+            }
+        }
+    }
+
     @Test("Unavailable EBSI DID resolution requires consent and Continue does not repeat issuance")
     func unavailableEBSIDIDRequiresConsent() async throws {
         let transport = FixtureOpenID4VCTransport()
@@ -176,7 +253,9 @@ struct OpenID4VCW3CBackendTests {
 
     @Test("Refresh token is decoded, rotated, and used to replace the credential")
     func refreshTokenRotation() async throws {
+        let credential = try Self.compactJWT(payload: ["nbf": 1_800_000_000, "exp": 1_800_003_600])
         let transport = FixtureOpenID4VCTransport(
+            credentialResponse: credential,
             initialCredentialStatus: 200, initialTransactionID: nil,
             tokenResponse: #"{"access_token":"access","token_type":"Bearer","c_nonce":"initial","refresh_token":"refresh-1"}"#,
             refreshTokenResponse: #"{"access_token":"access-2","token_type":"Bearer","c_nonce":"refresh","refresh_token":"refresh-2"}"#
@@ -197,12 +276,16 @@ struct OpenID4VCW3CBackendTests {
             return
         }
         #expect(continuation.refreshToken == "refresh-1")
+        #expect(credentials[0].validFrom == Date(timeIntervalSince1970: 1_800_000_000))
+        #expect(credentials[0].validUntil == Date(timeIntervalSince1970: 1_800_003_600))
         let refreshed = try await backend.refreshCredential(continuation)
         guard case let .replaced(result, rotated) = refreshed else {
             Issue.record("Expected an immediate replacement")
             return
         }
         #expect(result.id == credentials[0].id)
+        #expect(result.validFrom == credentials[0].validFrom)
+        #expect(result.validUntil == credentials[0].validUntil)
         #expect(rotated.refreshToken == "refresh-2")
         #expect(try await store.credentials().count == 1)
         let refreshRequest = try #require((await transport.requests).last { $0.url.path == "/token" })
@@ -295,7 +378,8 @@ struct OpenID4VCW3CBackendTests {
 
     @Test("Final response is persisted and restored before local credential commit")
     func finalDeferredIssuance() async throws {
-        let transport = FixtureOpenID4VCTransport(deferredInterval: 1)
+        let credential = try Self.compactJWT(payload: ["nbf": 1_800_000_000, "exp": 1_800_003_600])
+        let transport = FixtureOpenID4VCTransport(credentialResponse: credential, deferredInterval: 1)
         let store = FixtureCredentialStore()
         let clock = DeferredTestClock(Date(timeIntervalSince1970: 1_800_000_000))
         let backend = OpenID4VCW3CBackend(
@@ -341,6 +425,8 @@ struct OpenID4VCW3CBackendTests {
         }
         #expect(finalCheckpoint.remoteTransactionIDs.isEmpty)
         #expect(finalCheckpoint.stagedCredentials.count == 1)
+        #expect(finalCheckpoint.stagedCredentials.first?.issued.validFrom == Date(timeIntervalSince1970: 1_800_000_000))
+        #expect(finalCheckpoint.stagedCredentials.first?.issued.validUntil == Date(timeIntervalSince1970: 1_800_003_600))
         #expect(finalCheckpoint.nextPollAt == clock.value)
         #expect(try await store.credentials().isEmpty)
         #expect(!(await transport.requests).contains { $0.url.path == "/notification" })
@@ -364,6 +450,8 @@ struct OpenID4VCW3CBackendTests {
             return
         }
         #expect(credentials.count == 1)
+        #expect(credentials.first?.validFrom == Date(timeIntervalSince1970: 1_800_000_000))
+        #expect(credentials.first?.validUntil == Date(timeIntervalSince1970: 1_800_003_600))
         #expect(try await store.credentials().count == 1)
         #expect((await transport.requests).contains { $0.url.path == "/notification" })
         let request = try #require((await transport.requests).first { $0.url.path == "/deferred" })
@@ -1560,6 +1648,7 @@ struct OpenID4VCW3CBackendTests {
         #expect(request.claims.count == 3)
         let token = try await backend.storedPIDPresentationToken(
             id: offer.id,
+            selectedCredentialID: request.credentials.first?.id,
             selectedClaimIDs: Set(request.claims.map(\.id))
         )
         let object = try #require(JSONSerialization.jsonObject(with: Data(token.utf8)) as? [String: [String]])
@@ -1588,6 +1677,100 @@ struct OpenID4VCW3CBackendTests {
         let response = try #require(JSONSerialization.jsonObject(with: Data(wrapped.utf8)) as? [String: Any])
         let vpToken = try #require(response["vp_token"] as? [String: [String]])
         #expect(vpToken["pid"]?.first == presentation)
+    }
+
+    @Test("Stored presentation explicitly selects the second compatible credential")
+    func storedPresentationSelectsSecondCredential() async throws {
+        let transport = FixtureOpenID4VCTransport()
+        let keys = FixtureKeyProvider()
+        let key = try await keys.createKey(
+            purpose: .credentialBinding,
+            algorithm: .es256,
+            requiresUserPresence: false,
+            protection: .keychainSoftware
+        )
+        let olderDisclosures = try [
+            Self.disclosure(name: "given_name", value: "Older"),
+            Self.disclosure(name: "family_name", value: "Credential"),
+            Self.disclosure(name: "email", value: "older@example.test"),
+        ]
+        let newerDisclosures = try [
+            Self.disclosure(name: "given_name", value: "Newer"),
+            Self.disclosure(name: "family_name", value: "Credential"),
+            Self.disclosure(name: "email", value: "newer@example.test"),
+        ]
+        let olderIssuer = try Self.compactJWT(payload: [
+            "iss": "did:key:older-issuer",
+            "issuer": "did:key:older-issuer",
+            "vct": "urn:eu.europa.ec.eudi:pid:1",
+            "cnf": ["jwk": ["kty": "EC"]],
+            "_sd": olderDisclosures.map {
+                Data(SHA256.hash(data: Data($0.utf8))).base64EncodedString()
+                    .replacingOccurrences(of: "+", with: "-")
+                    .replacingOccurrences(of: "/", with: "_")
+                    .replacingOccurrences(of: "=", with: "")
+            },
+        ])
+        let newerIssuer = try Self.compactJWT(payload: [
+            "iss": "did:key:newer-issuer",
+            "issuer": "did:key:newer-issuer",
+            "vct": "urn:eu.europa.ec.eudi:pid:1",
+            "cnf": ["jwk": ["kty": "EC"]],
+            "_sd": newerDisclosures.map {
+                Data(SHA256.hash(data: Data($0.utf8))).base64EncodedString()
+                    .replacingOccurrences(of: "+", with: "-")
+                    .replacingOccurrences(of: "/", with: "_")
+                    .replacingOccurrences(of: "=", with: "")
+            },
+        ])
+        let olderID = try #require(UUID(uuidString: "00000000-0000-0000-0000-000000000001"))
+        let newerID = try #require(UUID(uuidString: "00000000-0000-0000-0000-000000000002"))
+        let holderKeyReference = key.id.rawValue.uuidString
+        let older = StoredEbsiCredential(
+            id: olderID,
+            profileID: "ietf-dc-sd-jwt-vc",
+            representation: .dcSdJwt,
+            rawCredential: Data((olderIssuer + "~" + olderDisclosures.joined(separator: "~") + "~").utf8),
+            holderKeyReference: holderKeyReference,
+            receivedAt: Date(timeIntervalSince1970: 1)
+        )
+        let newer = StoredEbsiCredential(
+            id: newerID,
+            profileID: "ietf-dc-sd-jwt-vc",
+            representation: .dcSdJwt,
+            rawCredential: Data((newerIssuer + "~" + newerDisclosures.joined(separator: "~") + "~").utf8),
+            holderKeyReference: holderKeyReference,
+            receivedAt: Date(timeIntervalSince1970: 2)
+        )
+        let backend = OpenID4VCW3CBackend(
+            transport: transport,
+            trustEvaluator: TrustedIssuerEvaluator(),
+            keyProvider: keys,
+            credentialStore: FixtureCredentialStore(values: [older, newer]),
+            credentialValidator: FixtureCredentialValidator(),
+            profile: try .dcSdJWTVC()
+        )
+        let offer = try await Self.authorizationOffer(backend)
+        _ = try await backend.beginPresentationRequired(
+            id: offer.id,
+            allowUntrusted: false,
+            interactionTypes: ["urn:openid:dcp:ia:openid4vp_presentation"]
+        )
+
+        let request = try await backend.prepareStoredPIDPresentation(id: offer.id)
+        #expect(request.credentials.map(\.id) == [newerID, olderID])
+        #expect(request.claims == request.credentials[0].claims)
+        #expect(request.credentials[0].claims.first?.value == "Newer")
+        #expect(request.credentials[1].claims.first?.value == "Older")
+
+        let selected = request.credentials[1]
+        let token = try await backend.storedPIDPresentationToken(
+            id: offer.id,
+            selectedCredentialID: selected.id,
+            selectedClaimIDs: Set(selected.claims.map(\.id))
+        )
+        let object = try #require(JSONSerialization.jsonObject(with: Data(token.utf8)) as? [String: [String]])
+        #expect(object["pid"]?.first?.hasPrefix(olderIssuer + "~") == true)
     }
 
     @Test("Stored jwt_vc_json credential creates a holder-signed JWT VP")
@@ -1640,6 +1823,7 @@ struct OpenID4VCW3CBackendTests {
         let request = try await backend.prepareStoredPIDPresentation(id: offer.id)
         let token = try await backend.storedPIDPresentationToken(
             id: offer.id,
+            selectedCredentialID: request.credentials.first?.id,
             selectedClaimIDs: Set(request.claims.map(\.id))
         )
         let object = try #require(JSONSerialization.jsonObject(with: Data(token.utf8)) as? [String: [String]])
@@ -1707,6 +1891,7 @@ struct OpenID4VCW3CBackendTests {
         let request = try await backend.beginStoredOpenID4VPPresentation(uri: deepLink)
         let redirectURI = try await backend.completeStoredOpenID4VPPresentation(
             id: request.id,
+            selectedCredentialID: request.credentials.first?.id,
             selectedClaimIDs: Set(request.claims.map(\.id)),
             userAccepted: true
         )
@@ -1745,7 +1930,7 @@ struct OpenID4VCW3CBackendTests {
         )
         let rejectedRequest = try await rejectingBackend.beginStoredOpenID4VPPresentation(uri: deepLink)
         let rejectionRedirect = try await rejectingBackend.completeStoredOpenID4VPPresentation(
-            id: rejectedRequest.id, selectedClaimIDs: [], userAccepted: false
+            id: rejectedRequest.id, selectedCredentialID: nil, selectedClaimIDs: [], userAccepted: false
         )
         #expect(rejectionRedirect == URL(string: "https://verifier.example/done"))
         let rejection = try #require((await transport.requests).last { $0.url.path == "/openid4vp/response" })
@@ -1755,7 +1940,7 @@ struct OpenID4VCW3CBackendTests {
         #expect(rejectionFields == ["error": "access_denied", "state": "vp-state"])
         await #expect(throws: OpenID4VCBackendError.unknownTransaction) {
             _ = try await rejectingBackend.completeStoredOpenID4VPPresentation(
-                id: rejectedRequest.id, selectedClaimIDs: [], userAccepted: false
+                id: rejectedRequest.id, selectedCredentialID: nil, selectedClaimIDs: [], userAccepted: false
             )
         }
     }
@@ -1803,6 +1988,7 @@ struct OpenID4VCW3CBackendTests {
         #expect(request.verifierName == RedirectURIStandaloneTransport.clientID)
         let redirectURI = try await backend.completeStoredOpenID4VPPresentation(
             id: request.id,
+            selectedCredentialID: request.credentials.first?.id,
             selectedClaimIDs: Set(request.claims.map(\.id)),
             userAccepted: true
         )
@@ -2054,6 +2240,31 @@ struct OpenID4VCW3CBackendTests {
 
     private static func jwtPayload(_ compact: String) throws -> [String: Any] {
         try jwtSegment(compact, index: 1)
+    }
+
+    private static func issueCredential(
+        _ credential: String,
+        format: String,
+        profile: EbsiCredentialProfile
+    ) async throws -> IssuedW3CCredential {
+        let backend = OpenID4VCW3CBackend(
+            transport: FixtureOpenID4VCTransport(
+                credentialFormat: format, credentialResponse: credential,
+                initialCredentialStatus: 200, initialTransactionID: nil
+            ),
+            trustEvaluator: TrustedIssuerEvaluator(),
+            keyProvider: FixtureKeyProvider(),
+            credentialStore: FixtureCredentialStore(),
+            credentialValidator: FixtureCredentialValidator(),
+            profile: profile
+        )
+        let offer = try await backend.resolveOffer("https://issuer.example/offer")
+        guard case let .issued(credentials) = try await backend.issueOutcome(
+            id: offer.id, allowUntrusted: false, transactionCode: "123456"
+        ) else {
+            throw OpenID4VCBackendError.invalidResponse
+        }
+        return try #require(credentials.first)
     }
 
     private static func standaloneRequestJWT(
@@ -2486,7 +2697,7 @@ private actor FixtureOpenID4VCTransport: OpenID4VCHTTPTransport {
     init(
         presentationFormat: String = "dc+sd-jwt",
         credentialFormat: String = "application/vc+jwt",
-        credentialResponse: String = "header.payload.signature",
+        credentialResponse: String = "header.eyJpc3MiOiJkaWQ6ZWJzaTppc3N1ZXIifQ.signature",
         iGrantCompactPresentation: Bool = false,
         omitAuthorizationResponseState: Bool = false,
         authorizationResponseStateOverride: String? = nil,

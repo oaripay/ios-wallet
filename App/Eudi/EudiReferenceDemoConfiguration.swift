@@ -60,7 +60,8 @@ enum EudiReferenceDemoConfiguration {
             trustConfiguration: trustConfiguration,
             openID4VciConfigurations: vciConfigurations,
             openID4VpConfiguration: OpenId4VpConfiguration(
-                clientIdSchemes: [.x509SanDns, .x509Hash]
+                clientIdSchemes: [.x509SanDns, .x509Hash],
+                supportedTransactionDataTypes: [.default()]
             )
         )
         return WalletConfiguration(baseline: baseline)

@@ -119,9 +119,6 @@ struct OpenID4VPRequestObjectValidatorTests {
         payload["aud"] = "did:ebsi:zVerifier"
         payload["response_type"] = "vp_token"
         payload["response_uri"] = "https://verifier.example/openid/vp/1"
-        // Non-array transaction_data does not match the OpenID4VP parameter
-        // definition and is ignored as an unrecognized extension parameter.
-        payload["transaction_data"] = ["action": "Login"]
         let jwt = try Self.sign(
             key: key,
             header: ["alg": "ES256", "typ": "oauth-authz-req+jwt"],
@@ -150,7 +147,10 @@ struct OpenID4VPRequestObjectValidatorTests {
         )
         let verified = try await NativeOpenID4VPRequestObjectValidator(resolver: KeyDIDResolver())
             .validate(compactJWT: jwt, at: Date())
-        #expect(verified.transactionData == [["type": .string("example")]])
+        #expect(verified.transactionData == [OpenID4VPTransactionData(
+            encoded: "eyJ0eXBlIjoiZXhhbXBsZSJ9",
+            decoded: ["type": .string("example")]
+        )])
     }
 
     @Test("iss is ignored, including when absent or mismatched")
@@ -245,7 +245,9 @@ struct OpenID4VPRequestObjectValidatorTests {
         let kid = try #require(document.authentication.first)
         // Empty arrays, non-string entries, invalid base64url, and encoded
         // non-object JSON all violate the transaction_data definition.
-        for invalid: Any in [[], [42], ["not base64url!"], ["WyJhcnJheSJd"]] {
+        for invalid: Any in [
+            ["action": "Login"], [], [42], ["not base64url!"], ["e30="], ["WyJhcnJheSJd"],
+        ] {
             var payload = requestPayload(clientID: "decentralized_identifier:\(did)")
             payload["transaction_data"] = invalid
             let jwt = try Self.sign(
@@ -257,6 +259,33 @@ struct OpenID4VPRequestObjectValidatorTests {
                 _ = try await NativeOpenID4VPRequestObjectValidator(resolver: KeyDIDResolver())
                     .validate(compactJWT: jwt, at: Date())
             }
+        }
+    }
+
+    @Test("Transaction data exceeding consent display limits is rejected")
+    func rejectsOversizedTransactionData() async throws {
+        let key = P256.Signing.PrivateKey()
+        let did = try KeyDIDResolver().derive(publicKeyX963: key.publicKey.x963Representation)
+        let document = try await KeyDIDResolver().resolve(did)
+        let kid = try #require(document.authentication.first)
+        var payload = requestPayload(clientID: "decentralized_identifier:\(did)")
+        let oversized = String(repeating: "x", count: 131_073)
+        let encoded = Data("{\"value\":\"\(oversized)\"}".utf8).base64EncodedString()
+            .replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "=", with: "")
+        payload["transaction_data"] = [encoded]
+        let request = try Self.sign(
+            key: key,
+            header: ["alg": "ES256", "typ": "oauth-authz-req+jwt", "kid": kid],
+            payload: payload
+        )
+
+        await #expect(throws: OpenID4VCBackendError.invalidPresentationChallenge(
+            reason: "transaction_data was malformed"
+        )) {
+            try await NativeOpenID4VPRequestObjectValidator(resolver: KeyDIDResolver())
+                .validate(compactJWT: request, at: Date())
         }
     }
 
@@ -280,11 +309,11 @@ struct OpenID4VPRequestObjectValidatorTests {
         )
         let verified = try await NativeOpenID4VPRequestObjectValidator(resolver: KeyDIDResolver())
             .validate(compactJWT: jwt, at: Date())
-        #expect(verified.transactionData == [[
+        #expect(verified.transactionData == [OpenID4VPTransactionData(encoded: object, decoded: [
             "type": .string("payment"),
             "amount": .number(12.5),
             "recurring": .bool(false),
-        ]])
+        ])])
     }
 
     @Test("Nonce and state are bounded URL-safe ASCII")

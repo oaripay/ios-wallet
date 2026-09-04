@@ -2,6 +2,7 @@ import EudiWalletKit
 import CryptoKit
 import Foundation
 import JOSESwift
+import MdocDataTransfer18013
 import OpenID4VCI
 import Security
 import WalletDomain
@@ -48,7 +49,8 @@ public struct EudiWalletKitBaseline: Sendable {
         self.trustConfiguration = Self.compatibilityTrustConfiguration(anchors: [])
         self.openID4VciConfigurations = [:]
         self.openID4VpConfiguration = OpenId4VpConfiguration(
-            clientIdSchemes: [.redirectUri]
+            clientIdSchemes: [.redirectUri],
+            supportedTransactionDataTypes: [.default()]
         )
         self.derivesTrustConfigurationFromSource = true
     }
@@ -479,6 +481,8 @@ public struct EudiWalletDocumentSummary: Equatable, Sendable {
     public let configurationID: String?
     public let issuerIdentifier: String?
     public let display: CredentialDisplayMetadata?
+    public let validFrom: Date?
+    public let validUntil: Date?
 
     public init(
         id: String,
@@ -488,7 +492,9 @@ public struct EudiWalletDocumentSummary: Equatable, Sendable {
         status: String,
         configurationID: String? = nil,
         issuerIdentifier: String? = nil,
-        display: CredentialDisplayMetadata? = nil
+        display: CredentialDisplayMetadata? = nil,
+        validFrom: Date? = nil,
+        validUntil: Date? = nil
     ) {
         self.id = id
         self.documentType = documentType
@@ -498,6 +504,8 @@ public struct EudiWalletDocumentSummary: Equatable, Sendable {
         self.configurationID = configurationID
         self.issuerIdentifier = issuerIdentifier
         self.display = display
+        self.validFrom = validFrom
+        self.validUntil = validUntil
     }
 }
 
@@ -655,16 +663,100 @@ public struct EudiRequestedClaim: Equatable, Sendable {
     }
 }
 
-/// A single key/value field of a verifier-supplied transaction data object,
-/// prepared for display in the presentation consent dialog.
-public struct EudiTransactionDataField: Equatable, Identifiable, Sendable {
-    public let key: String
-    public let value: String
-    public var id: String { key }
+public indirect enum EudiTransactionDataValue: Equatable, Sendable {
+    case string(String)
+    case number(String)
+    case bool(Bool)
+    case object([String: EudiTransactionDataValue])
+    case array([EudiTransactionDataValue])
+    case null
+}
 
-    public init(key: String, value: String) {
+/// A structured field from a verifier-supplied transaction data object.
+public struct EudiTransactionDataField: Equatable, Identifiable, Sendable {
+    public let id: String
+    public let key: String
+    public let value: EudiTransactionDataValue
+
+    public init(id: String, key: String, value: EudiTransactionDataValue) {
+        self.id = id
         self.key = key
         self.value = value
+    }
+}
+
+/// A lossless presentation of verifier-supplied transaction data for consent UI.
+public struct EudiTransactionDataPresentation: Equatable, Identifiable, Sendable {
+    public let id: String
+    public let type: String
+    public let title: String
+    public let purpose: String?
+    public let credentialIDs: [String]
+    public let reference: String?
+    public let fields: [EudiTransactionDataField]
+
+    public init(
+        id: String,
+        type: String,
+        title: String,
+        purpose: String? = nil,
+        credentialIDs: [String] = [],
+        reference: String? = nil,
+        fields: [EudiTransactionDataField] = []
+    ) {
+        self.id = id
+        self.type = type
+        self.title = title
+        self.purpose = purpose
+        self.credentialIDs = credentialIDs
+        self.reference = reference
+        self.fields = fields
+    }
+}
+
+public struct EudiPresentationCredential: Equatable, Identifiable, Sendable {
+    public let id: String
+    public let displayName: String
+    public let issuerIdentifier: String?
+    public let configurationID: String?
+    public let format: CredentialFormat
+    public let profileID: String
+    public let representation: String
+    public let receivedAt: Date
+    public let display: CredentialDisplayMetadata?
+
+    public init(
+        id: String,
+        displayName: String,
+        issuerIdentifier: String? = nil,
+        configurationID: String? = nil,
+        format: CredentialFormat,
+        profileID: String,
+        representation: String,
+        receivedAt: Date,
+        display: CredentialDisplayMetadata? = nil
+    ) {
+        self.id = id
+        self.displayName = displayName
+        self.issuerIdentifier = issuerIdentifier
+        self.configurationID = configurationID
+        self.format = format
+        self.profileID = profileID
+        self.representation = representation
+        self.receivedAt = receivedAt
+        self.display = display
+    }
+}
+
+public struct EudiPresentationOption: Equatable, Identifiable, Sendable {
+    public let id: String
+    public let credentialIDs: [String]
+    public let claims: [EudiRequestedClaim]
+
+    public init(id: String, credentialIDs: [String], claims: [EudiRequestedClaim]) {
+        self.id = id
+        self.credentialIDs = credentialIDs
+        self.claims = claims
     }
 }
 
@@ -675,9 +767,10 @@ public struct EudiPresentationRequest: Equatable, Sendable {
     public let verifierCertificateValid: Bool?
     public let claims: [EudiRequestedClaim]
     public let warningCount: Int
-    /// Verifier-supplied transaction data entries. Each entry is a flat list
-    /// of key/value fields rendered as a table alongside the claims.
-    public let transactionData: [[EudiTransactionDataField]]
+    /// Verifier-supplied transaction data prepared for native consent UI.
+    public let transactionData: [EudiTransactionDataPresentation]
+    public let credentials: [EudiPresentationCredential]
+    public let options: [EudiPresentationOption]
 
     public init(
         id: UUID,
@@ -686,7 +779,9 @@ public struct EudiPresentationRequest: Equatable, Sendable {
         verifierCertificateValid: Bool?,
         claims: [EudiRequestedClaim],
         warningCount: Int,
-        transactionData: [[EudiTransactionDataField]] = []
+        transactionData: [EudiTransactionDataPresentation] = [],
+        credentials: [EudiPresentationCredential] = [],
+        options: [EudiPresentationOption] = []
     ) {
         self.id = id
         self.verifierName = verifierName
@@ -695,6 +790,8 @@ public struct EudiPresentationRequest: Equatable, Sendable {
         self.claims = claims
         self.warningCount = warningCount
         self.transactionData = transactionData
+        self.credentials = credentials
+        self.options = options
     }
 }
 
@@ -764,6 +861,7 @@ actor EudiOperationalState {
         let session: PresentationSession
         let requester: String?
         let pendingIssuanceID: UUID?
+        let options: [EudiPresentationOption]
         let createdAt: Date
     }
 
@@ -814,6 +912,7 @@ actor EudiOperationalState {
         session: PresentationSession,
         requester: String?,
         pendingIssuanceID: UUID? = nil
+        , options: [EudiPresentationOption] = []
     ) -> UUID {
         prune()
         if presentations.count >= maximumEntries, let oldest = presentations.min(by: { $0.value.createdAt < $1.value.createdAt })?.key {
@@ -824,6 +923,7 @@ actor EudiOperationalState {
             session: session,
             requester: requester,
             pendingIssuanceID: pendingIssuanceID,
+            options: options,
             createdAt: Date()
         )
         return id
@@ -841,6 +941,18 @@ actor EudiOperationalState {
             session: entry.session,
             requester: requester,
             pendingIssuanceID: entry.pendingIssuanceID,
+            options: entry.options,
+            createdAt: entry.createdAt
+        )
+    }
+
+    func setOptions(id: UUID, options: [EudiPresentationOption]) {
+        guard let entry = presentations[id] else { return }
+        presentations[id] = ActivePresentation(
+            session: entry.session,
+            requester: entry.requester,
+            pendingIssuanceID: entry.pendingIssuanceID,
+            options: options,
             createdAt: entry.createdAt
         )
     }
@@ -936,10 +1048,15 @@ public final class EudiWalletKitAdapter: @unchecked Sendable {
             try await reconcilePendingOperationsUnlocked()
             async let metadataTask = configuration.metadataRepository.credentials()
             async let documentsTask = wallet.loadAllDocuments()
-            let metadata = try await metadataTask
+            var metadata = try await metadataTask
             let documents = try await documentsTask ?? []
             let summaries = documents.map { document in
                 let display = Self.storedDisplayMetadata(from: document.metadata)
+                let claims = StorageManager.toClaimsModel(
+                    doc: document,
+                    uiCulture: wallet.eudiWalletConfig.uiCulture,
+                    modelFactory: wallet.modelFactory
+                )
                 return EudiWalletDocumentSummary(
                     id: document.id,
                     documentType: document.docType,
@@ -948,11 +1065,30 @@ public final class EudiWalletKitAdapter: @unchecked Sendable {
                     status: document.status.rawValue,
                     configurationID: display?.configurationID,
                     issuerIdentifier: display?.issuerIdentifier,
-                    display: display?.display
+                    display: display?.display,
+                    validFrom: claims?.validFrom,
+                    validUntil: claims?.validUntil
                 )
+            }
+            let summariesByID = Dictionary(summaries.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+            for index in metadata.indices {
+                let record = metadata[index]
+                guard let documentID = record.walletDocumentID,
+                      let summary = summariesByID[documentID] else { continue }
+                let validFrom = record.validFrom ?? summary.validFrom
+                let validUntil = record.validUntil ?? summary.validUntil
+                guard validFrom != record.validFrom || validUntil != record.validUntil else { continue }
+                let updated = Self.copy(record, validFrom: validFrom, validUntil: validUntil)
+                try? await configuration.metadataRepository.replaceMetadata(updated)
+                metadata[index] = updated
             }
             var pending: [EudiPendingIssuance] = []
             for document in documents where document.status == .pending {
+                let claims = StorageManager.toClaimsModel(
+                    doc: document,
+                    uiCulture: wallet.eudiWalletConfig.uiCulture,
+                    modelFactory: wallet.modelFactory
+                )
                 guard let requestURI = document.authorizePresentationUrl,
                       let record = metadata.first(where: { $0.walletDocumentID == document.id }) else {
                     throw EudiWalletKitAdapterError.invalidPendingIssuance
@@ -974,7 +1110,9 @@ public final class EudiWalletKitAdapter: @unchecked Sendable {
                         status: document.status.rawValue,
                         configurationID: record.configurationID,
                         issuerIdentifier: record.issuerIdentifier,
-                        display: record.display
+                        display: record.display,
+                        validFrom: claims?.validFrom,
+                        validUntil: claims?.validUntil
                     )
                 ))
             }
@@ -989,17 +1127,24 @@ public final class EudiWalletKitAdapter: @unchecked Sendable {
     private func loadDocumentSummariesUnlocked() async throws -> [EudiWalletDocumentSummary] {
         if operationalConfiguration != nil { try await reconcilePendingOperationsUnlocked() }
         let documents = try await wallet.loadAllDocuments() ?? []
-        return documents.map {
-            let display = Self.storedDisplayMetadata(from: $0.metadata)
+        return documents.map { document in
+            let display = Self.storedDisplayMetadata(from: document.metadata)
+            let claims = StorageManager.toClaimsModel(
+                doc: document,
+                uiCulture: wallet.eudiWalletConfig.uiCulture,
+                modelFactory: wallet.modelFactory
+            )
             return EudiWalletDocumentSummary(
-                id: $0.id,
-                documentType: $0.docType,
-                displayName: $0.displayName,
-                format: $0.docDataFormat.rawValue,
-                status: $0.status.rawValue,
+                id: document.id,
+                documentType: document.docType,
+                displayName: document.displayName,
+                format: document.docDataFormat.rawValue,
+                status: document.status.rawValue,
                 configurationID: display?.configurationID,
                 issuerIdentifier: display?.issuerIdentifier,
-                display: display?.display
+                display: display?.display,
+                validFrom: claims?.validFrom,
+                validUntil: claims?.validUntil
             )
         }
     }
@@ -1242,6 +1387,11 @@ public final class EudiWalletKitAdapter: @unchecked Sendable {
         }()
         let documents = response.documents
         let summaries: [EudiWalletDocumentSummary] = documents.map { document in
+            let claims = StorageManager.toClaimsModel(
+                doc: document,
+                uiCulture: wallet.eudiWalletConfig.uiCulture,
+                modelFactory: wallet.modelFactory
+            )
             let configurationID = selected.first(where: { offered in
                 let matchesType = offered.docTypeOrVct == document.docType
                 let matchesConfiguration = offered.credentialConfigurationIdentifier == document.docType
@@ -1255,7 +1405,9 @@ public final class EudiWalletKitAdapter: @unchecked Sendable {
                 status: document.status.rawValue,
                 configurationID: configurationID,
                 issuerIdentifier: offer.model.issuerName,
-                display: Self.storedDisplayMetadata(from: document.metadata)?.display
+                display: Self.storedDisplayMetadata(from: document.metadata)?.display,
+                validFrom: claims?.validFrom,
+                validUntil: claims?.validUntil
             )
         }
         recovery = WalletOperationRecovery(
@@ -1484,6 +1636,11 @@ public final class EudiWalletKitAdapter: @unchecked Sendable {
         let documents = try await wallet.loadAllDocuments() ?? []
         var result: [EudiPendingIssuance] = []
         for document in documents where document.status == .pending {
+            let claims = StorageManager.toClaimsModel(
+                doc: document,
+                uiCulture: wallet.eudiWalletConfig.uiCulture,
+                modelFactory: wallet.modelFactory
+            )
             guard let requestURI = document.authorizePresentationUrl,
                   let record = metadata.first(where: { $0.walletDocumentID == document.id }) else {
                 throw EudiWalletKitAdapterError.invalidPendingIssuance
@@ -1505,7 +1662,9 @@ public final class EudiWalletKitAdapter: @unchecked Sendable {
                     status: document.status.rawValue,
                     configurationID: record.configurationID,
                     issuerIdentifier: record.issuerIdentifier,
-                    display: record.display
+                    display: record.display,
+                    validFrom: claims?.validFrom,
+                    validUntil: claims?.validUntil
                 )
             ))
         }
@@ -1568,6 +1727,11 @@ public final class EudiWalletKitAdapter: @unchecked Sendable {
                 throw error
             }
         }()
+        let resumedClaims = StorageManager.toClaimsModel(
+            doc: resumed,
+            uiCulture: wallet.eudiWalletConfig.uiCulture,
+            modelFactory: wallet.modelFactory
+        )
         let summary = EudiWalletDocumentSummary(
             id: resumed.id,
             documentType: resumed.docType,
@@ -1576,7 +1740,9 @@ public final class EudiWalletKitAdapter: @unchecked Sendable {
             status: resumed.status.rawValue,
             configurationID: existing.configurationID,
             issuerIdentifier: pending.issuerName,
-            display: Self.storedDisplayMetadata(from: resumed.metadata)?.display ?? existing.display
+            display: Self.storedDisplayMetadata(from: resumed.metadata)?.display ?? existing.display,
+            validFrom: resumedClaims?.validFrom,
+            validUntil: resumedClaims?.validUntil
         )
         let repeatedPendingRequestURI: String?
         do {
@@ -1751,6 +1917,11 @@ public final class EudiWalletKitAdapter: @unchecked Sendable {
                 throw error
             }
         }()
+        let resultClaims = StorageManager.toClaimsModel(
+            doc: result,
+            uiCulture: wallet.eudiWalletConfig.uiCulture,
+            modelFactory: wallet.modelFactory
+        )
         let summary = EudiWalletDocumentSummary(
             id: result.id,
             documentType: result.docType,
@@ -1759,7 +1930,9 @@ public final class EudiWalletKitAdapter: @unchecked Sendable {
             status: result.status.rawValue,
             configurationID: existing.configurationID,
             issuerIdentifier: issuerName,
-            display: Self.storedDisplayMetadata(from: result.metadata)?.display ?? existing.display
+            display: Self.storedDisplayMetadata(from: result.metadata)?.display ?? existing.display,
+            validFrom: resultClaims?.validFrom,
+            validUntil: resultClaims?.validUntil
         )
         recovery = WalletOperationRecovery(
             id: recovery.id,
@@ -1865,12 +2038,18 @@ public final class EudiWalletKitAdapter: @unchecked Sendable {
             throw EudiWalletKitAdapterError.presentationRequestFailed
         }
         let requester = requests.compactMap(\.requestName).first
+        let options = Self.presentationOptions(requests: requests, session: session)
         let id = await operationalState.insert(
             session: session,
             requester: requester,
-            pendingIssuanceID: pendingIssuanceID
+            pendingIssuanceID: pendingIssuanceID,
+            options: options
         )
-        return Self.presentationRequest(id: id, session: session, requester: requester)
+        let summaries = try await loadDocumentSummaries()
+        return Self.presentationRequest(
+            id: id, session: session, requester: requester, requests: requests,
+            summaries: summaries, profileID: trustProfileID, options: options
+        )
     }
 
     public func beginBLEEngagement() async throws -> EudiBLEEngagement {
@@ -1898,17 +2077,25 @@ public final class EudiWalletKitAdapter: @unchecked Sendable {
         }
         let requester = requests.compactMap(\.requestName).first
         await operationalState.setRequester(id: id, requester: requester)
-        return Self.presentationRequest(id: id, session: entry.session, requester: requester)
+        let options = Self.presentationOptions(requests: requests, session: entry.session)
+        await operationalState.setOptions(id: id, options: options)
+        let summaries = try await loadDocumentSummaries()
+        return Self.presentationRequest(
+            id: id, session: entry.session, requester: requester, requests: requests,
+            summaries: summaries, profileID: trustProfileID, options: options
+        )
     }
 
     public func submitPresentation(
         id: UUID,
+        selectedOptionID: String?,
         selectedClaimIDs: Set<String>,
         userAccepted: Bool
     ) async throws -> EudiPresentationResult {
         try await operationalState.performLifecycleOperation { [self] in
             try await submitPresentationUnlocked(
                 id: id,
+                selectedOptionID: selectedOptionID,
                 selectedClaimIDs: selectedClaimIDs,
                 userAccepted: userAccepted
             )
@@ -1917,6 +2104,7 @@ public final class EudiWalletKitAdapter: @unchecked Sendable {
 
     private func submitPresentationUnlocked(
         id: UUID,
+        selectedOptionID: String?,
         selectedClaimIDs: Set<String>,
         userAccepted: Bool
     ) async throws -> EudiPresentationResult {
@@ -1926,7 +2114,11 @@ public final class EudiWalletKitAdapter: @unchecked Sendable {
             throw EudiWalletKitAdapterError.unknownPresentation
         }
         let session = entry.session
-        let availableClaims = Self.claims(session: session)
+        let selectedOption = selectedOptionID.flatMap { id in entry.options.first { $0.id == id } }
+        guard !userAccepted || selectedOption != nil else {
+            throw EudiWalletKitAdapterError.invalidClaimSelection
+        }
+        let availableClaims = selectedOption?.claims ?? []
         guard userAccepted || selectedClaimIDs.isEmpty else {
             throw EudiWalletKitAdapterError.rejectedPresentationHasClaims
         }
@@ -1937,7 +2129,9 @@ public final class EudiWalletKitAdapter: @unchecked Sendable {
         guard !userAccepted || required.isSubset(of: selectedClaimIDs) else {
             throw EudiWalletKitAdapterError.requiredClaimMissing
         }
-        Self.applySelection(selectedClaimIDs, to: session)
+        let selectedIndex = selectedOption.flatMap { option in entry.options.firstIndex { $0.id == option.id } }
+        let selectedElements = selectedIndex.map { session.disclosedDocumentSets[$0].docElements } ?? []
+        Self.applySelection(selectedClaimIDs, to: selectedElements)
         let auditEvent = makeAuditEvent(
             configuration: configuration,
             operation: .presentation,
@@ -1959,7 +2153,6 @@ public final class EudiWalletKitAdapter: @unchecked Sendable {
             try? await configuration.recoveryStore.deleteRecovery(id: auditRecovery.id)
             throw EudiWalletKitAdapterError.unknownPresentation
         }
-        let selectedElements = session.disclosedDocumentSets.flatMap(\.docElements)
         let items = userAccepted ? selectedElements.items : [:]
         let redirect = LockedRedirect()
         do {
@@ -2235,7 +2428,28 @@ public final class EudiWalletKitAdapter: @unchecked Sendable {
             issuerTrust: .trusted,
             status: status,
             createdAt: createdAt,
-            display: summary.display
+            display: summary.display,
+            validFrom: summary.validFrom,
+            validUntil: summary.validUntil
+        )
+    }
+
+    private static func copy(
+        _ record: CredentialRecord,
+        validFrom: Date?,
+        validUntil: Date?
+    ) -> CredentialRecord {
+        CredentialRecord(
+            id: record.id, configurationID: record.configurationID,
+            walletDocumentID: record.walletDocumentID, backendID: record.backendID,
+            backendDocumentID: record.backendDocumentID, displayName: record.displayName,
+            format: record.format, profileID: record.profileID,
+            issuerIdentifier: record.issuerIdentifier, subjectIdentifier: record.subjectIdentifier,
+            holderBinding: record.holderBinding, cryptographicValidity: record.cryptographicValidity,
+            issuerTrust: record.issuerTrust, status: record.status,
+            legalClassification: record.legalClassification, createdAt: record.createdAt,
+            displayClaims: record.displayClaims, display: record.display, refresh: record.refresh,
+            validFrom: validFrom, validUntil: validUntil
         )
     }
 
@@ -2415,22 +2629,122 @@ public final class EudiWalletKitAdapter: @unchecked Sendable {
     private static func presentationRequest(
         id: UUID,
         session: PresentationSession,
-        requester: String?
+        requester: String?,
+        requests: [UserRequestInfo],
+        summaries: [EudiWalletDocumentSummary],
+        profileID: String,
+        options: [EudiPresentationOption]
     ) -> EudiPresentationRequest {
-        EudiPresentationRequest(
+        let requestedClaims = options.first?.claims ?? claims(session: session)
+        let documentIDs = Set(requestedClaims.map(\.documentID))
+        return EudiPresentationRequest(
             id: id,
             verifierName: session.readerCertIssuer ?? requester,
             verifierLegalName: session.readerLegalName,
             verifierCertificateValid: session.readerCertIssuerValid,
-            claims: claims(session: session),
+            claims: requestedClaims,
             warningCount: session.disclosedDocumentSets.reduce(0) {
                 $0 + ($1.warnings?.count ?? 0)
-            }
+            },
+            transactionData: transactionData(requests),
+            credentials: summaries.filter { documentIDs.contains($0.id) }.map {
+                EudiPresentationCredential(
+                    id: $0.id,
+                    displayName: $0.displayName ?? $0.documentType,
+                    issuerIdentifier: $0.issuerIdentifier,
+                    configurationID: $0.configurationID,
+                    format: $0.format.lowercased().contains("mdoc") || $0.format.lowercased().contains("cbor")
+                        ? .mdoc
+                        : .sdJWTVC,
+                    profileID: profileID,
+                    representation: $0.format,
+                    receivedAt: .distantPast,
+                    display: $0.display
+                )
+            },
+            options: options
         )
     }
 
+    private static func presentationOptions(
+        requests: [UserRequestInfo],
+        session: PresentationSession
+    ) -> [EudiPresentationOption] {
+        zip(requests, session.disclosedDocumentSets).enumerated().map { index, pair in
+            let elements = pair.1.docElements
+            let optionClaims = claims(elements: elements)
+            return EudiPresentationOption(
+                id: pair.0.requestName ?? "option-\(index)",
+                credentialIDs: Array(Set(optionClaims.map(\.documentID))).sorted(),
+                claims: optionClaims
+            )
+        }
+    }
+
+    private static func transactionData(_ requests: [UserRequestInfo]) -> [EudiTransactionDataPresentation] {
+        var result: [EudiTransactionDataPresentation] = []
+        for request in requests {
+            guard let transactionData = request.transactionDataRequested else { continue }
+            for documentID in transactionData.keys.sorted() {
+                guard let valuesByType = transactionData[documentID] else { continue }
+                for type in valuesByType.keys.sorted() {
+                    guard let json = valuesByType[type],
+                          let object = json.dictionaryObject else { continue }
+                    let index = result.count
+                    let converted = object.mapValues(transactionValue)
+                    let purpose = object["purpose"] as? String
+                    let reference = object["transaction_id"] as? String
+                    let credentialIDs = object["credential_ids"] as? [String] ?? [documentID]
+                    let fields = converted.keys.sorted()
+                        .filter { !["type", "purpose", "transaction_id", "credential_ids"].contains($0) }
+                        .map {
+                            EudiTransactionDataField(
+                                id: "native-\(index).\($0)",
+                                key: humanizedTransactionKey($0),
+                                value: converted[$0] ?? .null
+                            )
+                        }
+                    result.append(EudiTransactionDataPresentation(
+                        id: "native-transaction-\(index)",
+                        type: type,
+                        title: transactionTitle(type),
+                        purpose: purpose,
+                        credentialIDs: credentialIDs,
+                        reference: reference,
+                        fields: fields
+                    ))
+                }
+            }
+        }
+        return result
+    }
+
+    private static func transactionValue(_ value: Any) -> EudiTransactionDataValue {
+        switch value {
+        case let value as String: return .string(value)
+        case let value as Bool: return .bool(value)
+        case let value as NSNumber: return .number(value.stringValue)
+        case let value as [Any]: return .array(value.map(transactionValue))
+        case let value as [String: Any]: return .object(value.mapValues(transactionValue))
+        case _ as NSNull: return .null
+        default: return .string(String(describing: value))
+        }
+    }
+
+    private static func humanizedTransactionKey(_ key: String) -> String {
+        key.split(separator: "_").map { $0.capitalized }.joined(separator: " ")
+    }
+
+    private static func transactionTitle(_ type: String) -> String {
+        type.localizedCaseInsensitiveContains("payment") ? "Payment authorization" : "Transaction details"
+    }
+
     private static func claims(session: PresentationSession) -> [EudiRequestedClaim] {
-        session.disclosedDocumentSets.flatMap(\.docElements).flatMap { document in
+        claims(elements: session.disclosedDocumentSets.flatMap(\.docElements))
+    }
+
+    private static func claims(elements: [DocElements]) -> [EudiRequestedClaim] {
+        elements.flatMap { document in
             switch document {
             case let .msoMdoc(mdoc):
                 return mdoc.nameSpacedElements.flatMap { namespace in
@@ -2491,9 +2805,9 @@ public final class EudiWalletKitAdapter: @unchecked Sendable {
 
     private static func applySelection(
         _ selectedClaimIDs: Set<String>,
-        to session: PresentationSession
+        to elements: [DocElements]
     ) {
-        for document in session.disclosedDocumentSets.flatMap(\.docElements) {
+        for document in elements {
             switch document {
             case let .msoMdoc(mdoc):
                 for namespace in mdoc.nameSpacedElements {

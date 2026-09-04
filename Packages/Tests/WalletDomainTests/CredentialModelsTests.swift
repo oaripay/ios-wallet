@@ -107,4 +107,34 @@ struct CredentialModelsTests {
         #expect(decoded.refresh == .manual)
         #expect(decoded.refresh.mode == .manual)
     }
+
+    @Test("Normalized validity round trips and legacy date keys migrate")
+    func validityCompatibility() throws {
+        let validFrom = Date(timeIntervalSince1970: 1_700_000_000)
+        let validUntil = Date(timeIntervalSince1970: 1_800_000_000)
+        let record = CredentialRecord(
+            configurationID: "pid", displayName: "PID", format: .sdJWTVC,
+            profileID: "eudi", issuerIdentifier: "https://issuer.example",
+            createdAt: validFrom, validFrom: validFrom, validUntil: validUntil
+        )
+        let encoded = try JSONEncoder().encode(record)
+        let object = try #require(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        #expect(object["validFrom"] != nil)
+        #expect(object["validUntil"] != nil)
+        #expect(object["issuedAt"] == nil)
+        #expect(object["expiresAt"] == nil)
+        #expect(try JSONDecoder().decode(CredentialRecord.self, from: encoded) == record)
+
+        var legacy = object
+        legacy["issuedAt"] = legacy.removeValue(forKey: "validFrom")
+        legacy["expiresAt"] = legacy.removeValue(forKey: "validUntil")
+        let migrated = try JSONDecoder().decode(
+            CredentialRecord.self,
+            from: JSONSerialization.data(withJSONObject: legacy)
+        )
+        #expect(migrated.validFrom == validFrom)
+        #expect(migrated.validUntil == validUntil)
+        #expect(migrated.issuedAt == validFrom)
+        #expect(migrated.expiresAt == validUntil)
+    }
 }

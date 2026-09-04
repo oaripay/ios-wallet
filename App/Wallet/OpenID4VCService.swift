@@ -40,10 +40,12 @@ enum W3CCredentialRefreshCompletion: Equatable, Sendable {
 }
 
 protocol OpenID4VCOperating: Sendable {
+    func backfillCredentialValidity() async
     func resolveInteraction(uri: String) async throws -> OpenID4VCResolvedInteraction
     func beginPresentation(uri: String) async throws -> EudiPresentationRequest
     func completePresentation(
         id: UUID,
+        selectedOptionID: String?,
         selectedClaimIDs: Set<String>,
         userAccepted: Bool
     ) async throws -> URL?
@@ -60,6 +62,7 @@ protocol OpenID4VCOperating: Sendable {
     func preparePIDPresentation(id: UUID) async throws -> EudiPresentationRequest
     func completePIDPresentation(
         id: UUID,
+        selectedOptionID: String?,
         selectedClaimIDs: Set<String>,
         userAccepted: Bool
     ) async throws -> OpenID4VCInteractionCompletion
@@ -166,16 +169,18 @@ actor LiveOpenID4VCService: OpenID4VCOperating {
 
     func beginPresentation(uri: String) async throws -> EudiPresentationRequest {
         let request = try await backend.beginStoredOpenID4VPPresentation(uri: uri)
-        return presentationRequest(request)
+        return try await presentationRequest(request)
     }
 
     func completePresentation(
         id: UUID,
+        selectedOptionID: String?,
         selectedClaimIDs: Set<String>,
         userAccepted: Bool
     ) async throws -> URL? {
         let redirectURI = try await backend.completeStoredOpenID4VPPresentation(
             id: id,
+            selectedCredentialID: selectedOptionID.flatMap(UUID.init(uuidString:)),
             selectedClaimIDs: selectedClaimIDs,
             userAccepted: userAccepted
         )
@@ -425,7 +430,9 @@ actor LiveOpenID4VCService: OpenID4VCOperating {
                 legalClassification: .provisional,
                 createdAt: now,
                 displayClaims: credential.displayClaims,
-                display: credential.display
+                display: credential.display,
+                validFrom: credential.validFrom,
+                validUntil: credential.validUntil
             )
         }
         return DeferredCompletion(records: records, auditEvent: AuditEvent(
@@ -495,7 +502,9 @@ actor LiveOpenID4VCService: OpenID4VCOperating {
                 legalClassification: .provisional,
                  createdAt: Date(),
                  displayClaims: credential.displayClaims,
-                 display: credential.display
+                 display: credential.display,
+                 validFrom: credential.validFrom,
+                 validUntil: credential.validUntil
             )
             try await metadata.saveMetadata(record)
             if let continuation = credential.refreshContinuation {
@@ -531,10 +540,12 @@ actor LiveOpenID4VCService: OpenID4VCOperating {
 
     func preparePIDPresentation(id: UUID) async throws -> EudiPresentationRequest {
         let request = try await backend.prepareStoredPIDPresentation(id: id)
-        return presentationRequest(request)
+        return try await presentationRequest(request)
     }
 
-    private func presentationRequest(_ request: DCQLCredentialPresentationRequest) -> EudiPresentationRequest {
+    private func presentationRequest(_ request: DCQLCredentialPresentationRequest) async throws -> EudiPresentationRequest {
+        let records = try await metadata.credentials()
+        let recordsByDocumentID = Dictionary(uniqueKeysWithValues: records.map { ($0.backendDocumentID, $0) })
         return EudiPresentationRequest(
             id: request.id,
             verifierName: request.verifierName,
@@ -545,7 +556,7 @@ actor LiveOpenID4VCService: OpenID4VCOperating {
                     id: claim.id,
                     documentID: request.id.uuidString,
                     documentType: "W3C credential",
-                    displayName: "PID",
+                    displayName: nil,
                     claimPath: claim.path,
                     displayValue: claim.value,
                     required: claim.required,
@@ -553,37 +564,115 @@ actor LiveOpenID4VCService: OpenID4VCOperating {
                 )
             },
             warningCount: 0,
-            transactionData: request.transactionData.map(Self.transactionDataFields)
+            transactionData: request.transactionData.enumerated().map { index, entry in
+                Self.transactionDataPresentation(entry.decoded, index: index)
+            },
+            credentials: request.credentials.map {
+                let record = recordsByDocumentID[$0.id.uuidString]
+                return EudiPresentationCredential(
+                    id: $0.id.uuidString,
+                    displayName: record?.displayName ?? Self.displayCredentialID($0.displayName),
+                    issuerIdentifier: record?.issuerIdentifier,
+                    configurationID: record?.configurationID,
+                    format: record?.format ?? ($0.representation == .dcSdJwt || $0.representation == .vcdm2SdJwt ? .sdJWTVC : .jwtVC),
+                    profileID: record?.profileID ?? $0.profileID,
+                    representation: $0.representation.rawValue,
+                    receivedAt: $0.receivedAt,
+                    display: record?.display
+                )
+            },
+            options: request.credentials.map { credential in
+                EudiPresentationOption(
+                    id: credential.id.uuidString,
+                    credentialIDs: [credential.id.uuidString],
+                    claims: credential.claims.map { claim in
+                        EudiRequestedClaim(
+                            id: claim.id,
+                            documentID: credential.id.uuidString,
+                            documentType: "W3C credential",
+                            displayName: nil,
+                            claimPath: claim.path,
+                            displayValue: claim.value,
+                            required: claim.required,
+                            intentToRetain: false
+                        )
+                    }
+                )
+            }
         )
     }
 
-    private static func transactionDataFields(
-        _ object: [String: AnySendableJSON]
-    ) -> [EudiTransactionDataField] {
-        object.keys.sorted().map { key in
-            EudiTransactionDataField(key: key, value: Self.displayValue(object[key] ?? .null))
+    private static func transactionDataPresentation(
+        _ object: [String: AnySendableJSON],
+        index: Int
+    ) -> EudiTransactionDataPresentation {
+        let type = object["type"]?.string ?? "unknown"
+        let purpose = object["purpose"]?.string
+        let credentialIDs: [String]
+        if case let .array(values)? = object["credential_ids"] {
+            credentialIDs = values.compactMap(\.string)
+        } else {
+            credentialIDs = []
+        }
+        let reference = object["transaction_id"]?.string
+        var fields: [EudiTransactionDataField] = []
+
+        for key in object.keys.sorted() where !["type", "purpose", "transaction_id", "credential_ids"].contains(key) {
+            fields.append(EudiTransactionDataField(
+                id: "transaction-\(index).\(key)",
+                key: humanizedTransactionKey(key),
+                value: transactionValue(object[key] ?? .null)
+            ))
+        }
+
+        return EudiTransactionDataPresentation(
+            id: "transaction-\(index)",
+            type: type,
+            title: transactionTitle(for: type),
+            purpose: purpose,
+            credentialIDs: credentialIDs,
+            reference: reference,
+            fields: fields
+        )
+    }
+
+    private static func transactionTitle(for type: String) -> String {
+        if type.localizedCaseInsensitiveContains("payment") { return "Payment authorization" }
+        if type.localizedCaseInsensitiveContains("oari-test-transaction") { return "Credential presentation" }
+        return "Transaction details"
+    }
+
+    private static func humanizedTransactionKey(_ key: String) -> String {
+        key.split(separator: "_").map { $0.capitalized }.joined(separator: " ")
+    }
+
+    private static func displayCredentialID(_ value: String) -> String {
+        switch value {
+        case "oari-vcdm2-refresh-test": return "OARI Refresh Test Credential"
+        case "oari-rtao-vcdm2-refreshable-credential": return "OARI VCDM 2.0 Credential"
+        default: return value
         }
     }
 
-    private static func displayValue(_ value: AnySendableJSON) -> String {
+    private static func transactionValue(_ value: AnySendableJSON) -> EudiTransactionDataValue {
         switch value {
-        case let .string(string): string
-        case let .number(number):
+        case let .string(string): .string(string)
+        case let .number(number): .number(
             number == number.rounded() && abs(number) < 1e15
                 ? String(Int64(number))
                 : String(number)
-        case let .bool(bool): bool ? "Yes" : "No"
-        case let .array(values): values.map(Self.displayValue).joined(separator: ", ")
+        )
+        case let .bool(bool): .bool(bool)
+        case let .array(values): .array(values.map(Self.transactionValue))
         case let .object(object):
-            object.keys.sorted()
-                .map { "\($0): \(Self.displayValue(object[$0] ?? .null))" }
-                .joined(separator: ", ")
-        case .null: "—"
+            .object(object.mapValues(Self.transactionValue))
+        case .null: .null
         }
     }
 
     func completePIDPresentation(
         id: UUID,
+        selectedOptionID: String?,
         selectedClaimIDs: Set<String>,
         userAccepted: Bool
     ) async throws -> OpenID4VCInteractionCompletion {
@@ -593,6 +682,7 @@ actor LiveOpenID4VCService: OpenID4VCOperating {
         }
         let token = try await backend.storedPIDPresentationToken(
             id: id,
+            selectedCredentialID: selectedOptionID.flatMap(UUID.init(uuidString:)),
             selectedClaimIDs: selectedClaimIDs
         )
         return try await submitPIDPresentation(id: id, vpToken: token)
@@ -856,10 +946,48 @@ actor LiveOpenID4VCService: OpenID4VCOperating {
             subjectIdentifier: record.subjectIdentifier, holderBinding: record.holderBinding,
             cryptographicValidity: .valid, issuerTrust: record.issuerTrust,
             status: issued.map { $0.hasStatusReference ? .notEvaluated : .notProvided } ?? record.status,
-            legalClassification: record.legalClassification, issuedAt: record.issuedAt,
-            expiresAt: record.expiresAt, createdAt: record.createdAt,
+            legalClassification: record.legalClassification, createdAt: record.createdAt,
             displayClaims: issued?.displayClaims ?? record.displayClaims,
-            display: issued?.display ?? record.display, refresh: refresh
+            display: issued?.display ?? record.display, refresh: refresh,
+            validFrom: issued?.validFrom ?? record.validFrom,
+            validUntil: issued?.validUntil ?? record.validUntil
+        )
+    }
+
+    func backfillCredentialValidity() async {
+        guard let validity = try? await backend.storedCredentialValidity(),
+              var records = try? await metadata.credentials() else { return }
+        let byID = Dictionary(uniqueKeysWithValues: validity.map { ($0.credentialID.uuidString, $0) })
+        for index in records.indices {
+            let record = records[index]
+            guard record.backendID == W3CBackendComposition.backendID,
+                  let backendDocumentID = record.backendDocumentID,
+                  let value = byID[backendDocumentID] else { continue }
+            let validFrom = record.validFrom ?? value.validFrom
+            let validUntil = record.validUntil ?? value.validUntil
+            guard validFrom != record.validFrom || validUntil != record.validUntil else { continue }
+            let updated = Self.copy(record, validFrom: validFrom, validUntil: validUntil)
+            try? await metadata.replaceMetadata(updated)
+            records[index] = updated
+        }
+    }
+
+    private static func copy(
+        _ record: CredentialRecord,
+        validFrom: Date?,
+        validUntil: Date?
+    ) -> CredentialRecord {
+        CredentialRecord(
+            id: record.id, configurationID: record.configurationID,
+            walletDocumentID: record.walletDocumentID, backendID: record.backendID,
+            backendDocumentID: record.backendDocumentID, displayName: record.displayName,
+            format: record.format, profileID: record.profileID,
+            issuerIdentifier: record.issuerIdentifier, subjectIdentifier: record.subjectIdentifier,
+            holderBinding: record.holderBinding, cryptographicValidity: record.cryptographicValidity,
+            issuerTrust: record.issuerTrust, status: record.status,
+            legalClassification: record.legalClassification, createdAt: record.createdAt,
+            displayClaims: record.displayClaims, display: record.display, refresh: record.refresh,
+            validFrom: validFrom, validUntil: validUntil
         )
     }
 }

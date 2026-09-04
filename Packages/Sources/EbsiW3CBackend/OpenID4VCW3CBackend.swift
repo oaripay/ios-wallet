@@ -266,8 +266,8 @@ public struct OpenID4VPPresentationRequest: Equatable, Identifiable, Sendable {
     public let dcqlQuery: [String: AnySendableJSON]
     public let signedRequest: String?
     public let clientID: String?
-    /// Decoded `transaction_data` objects supplied by the verifier.
-    public let transactionData: [[String: AnySendableJSON]]
+    /// Exact encoded and decoded `transaction_data` supplied by the verifier.
+    public let transactionData: [OpenID4VPTransactionData]
 
     public init(
         id: UUID,
@@ -281,7 +281,7 @@ public struct OpenID4VPPresentationRequest: Equatable, Identifiable, Sendable {
         dcqlQuery: [String: AnySendableJSON],
         signedRequest: String?,
         clientID: String? = nil,
-        transactionData: [[String: AnySendableJSON]] = []
+        transactionData: [OpenID4VPTransactionData] = []
     ) {
         self.id = id
         self.authorizationChallengeEndpoint = authorizationChallengeEndpoint
@@ -311,23 +311,34 @@ public struct DCQLRequestedClaim: Equatable, Identifiable, Sendable {
     public let required: Bool
 }
 
+public struct DCQLRequestedCredential: Equatable, Identifiable, Sendable {
+    public let id: UUID
+    public let displayName: String
+    public let profileID: String
+    public let representation: EbsiCredentialRepresentation
+    public let receivedAt: Date
+    public let claims: [DCQLRequestedClaim]
+}
+
 public struct DCQLCredentialPresentationRequest: Equatable, Identifiable, Sendable {
     public let id: UUID
     public let verifierName: String?
     public let claims: [DCQLRequestedClaim]
-    /// Decoded `transaction_data` objects supplied by the verifier, to be
-    /// displayed to the user alongside the requested claims.
-    public let transactionData: [[String: AnySendableJSON]]
+    public let credentials: [DCQLRequestedCredential]
+    /// Exact encoded and decoded `transaction_data` supplied by the verifier.
+    public let transactionData: [OpenID4VPTransactionData]
 
     public init(
         id: UUID,
         verifierName: String?,
         claims: [DCQLRequestedClaim],
-        transactionData: [[String: AnySendableJSON]] = []
+        credentials: [DCQLRequestedCredential] = [],
+        transactionData: [OpenID4VPTransactionData] = []
     ) {
         self.id = id
         self.verifierName = verifierName
         self.claims = claims
+        self.credentials = credentials
         self.transactionData = transactionData
     }
 }
@@ -340,6 +351,8 @@ public struct IssuedW3CCredential: Codable, Equatable, Sendable {
     public let profileID: String
     public let representation: EbsiCredentialRepresentation
     public let hasStatusReference: Bool
+    public let validFrom: Date?
+    public let validUntil: Date?
     public let displayClaims: [CredentialDisplayClaim]
     public let display: CredentialDisplayMetadata?
     /// Sensitive protocol state. Persist only in encrypted, access-controlled storage.
@@ -349,9 +362,22 @@ public struct IssuedW3CCredential: Codable, Equatable, Sendable {
         Self(
             id: id, configurationID: configurationID, displayName: displayName,
             issuerIdentifier: issuerIdentifier, profileID: profileID, representation: representation,
-            hasStatusReference: hasStatusReference, displayClaims: displayClaims, display: display,
+            hasStatusReference: hasStatusReference, validFrom: validFrom, validUntil: validUntil,
+            displayClaims: displayClaims, display: display,
             refreshContinuation: continuation
         )
+    }
+}
+
+public struct StoredW3CCredentialValidity: Equatable, Sendable {
+    public let credentialID: UUID
+    public let validFrom: Date?
+    public let validUntil: Date?
+
+    public init(credentialID: UUID, validFrom: Date?, validUntil: Date?) {
+        self.credentialID = credentialID
+        self.validFrom = validFrom
+        self.validUntil = validUntil
     }
 }
 
@@ -600,7 +626,7 @@ public actor OpenID4VCW3CBackend {
     private var presentationChallengeTasks: [UUID: Task<InteractiveAuthorizationChallenge, Error>] = [:]
     private var interactiveAuthorizationContexts: [UUID: InteractiveAuthorizationContext] = [:]
     private var authorizationServerContexts: [UUID: AuthorizationServerContext] = [:]
-    private var preparedPIDPresentations: [UUID: PreparedW3CPresentation] = [:]
+    private var preparedPIDPresentations: [UUID: PreparedW3CPresentationSession] = [:]
     private var transactionHolderIdentities: [UUID: W3CHolderIdentity] = [:]
     private var stagedCredentials: [UUID: StagedIssuance] = [:]
 
@@ -1086,6 +1112,7 @@ public actor OpenID4VCW3CBackend {
                 "stored=\(credentials.count), currentHolder=\(holderKeyReference)"
             )
         }
+        var candidates: [(credential: DCQLRequestedCredential, prepared: PreparedW3CPresentation)] = []
         for credential in holderCredentials {
             var claims: [DCQLRequestedClaim] = []
             let kind: PreparedW3CPresentation.Kind
@@ -1144,17 +1171,40 @@ public actor OpenID4VCW3CBackend {
             default:
                 continue
             }
-            preparedPIDPresentations[id] = PreparedW3CPresentation(
+            let prepared = PreparedW3CPresentation(
                 credential: credential,
-                authorizationGenerationID: context.generationID,
                 kind: kind,
                 requiredClaimIDs: Set(claims.map(\.id)),
-                queryID: query.id
+            )
+            candidates.append((
+                credential: DCQLRequestedCredential(
+                    id: credential.id,
+                    displayName: credential.profileID,
+                    profileID: credential.profileID,
+                    representation: credential.representation,
+                    receivedAt: credential.receivedAt,
+                    claims: claims
+                ),
+                prepared: prepared
+            ))
+        }
+        candidates.sort {
+            if $0.credential.receivedAt != $1.credential.receivedAt {
+                return $0.credential.receivedAt > $1.credential.receivedAt
+            }
+            return $0.credential.id.uuidString < $1.credential.id.uuidString
+        }
+        if let defaultCandidate = candidates.first {
+            preparedPIDPresentations[id] = PreparedW3CPresentationSession(
+                authorizationGenerationID: context.generationID,
+                queryID: query.id,
+                candidates: Dictionary(uniqueKeysWithValues: candidates.map { ($0.credential.id, $0.prepared) })
             )
             return DCQLCredentialPresentationRequest(
                 id: id,
                 verifierName: challenge.clientID,
-                claims: claims,
+                claims: defaultCandidate.credential.claims,
+                credentials: candidates.map(\.credential),
                 transactionData: challenge.transactionData
             )
         }
@@ -1479,13 +1529,16 @@ public actor OpenID4VCW3CBackend {
 
     public func storedPIDPresentationToken(
         id: UUID,
+        selectedCredentialID: UUID?,
         selectedClaimIDs: Set<String>
     ) async throws -> String {
         guard let context = interactiveAuthorizationContexts[id],
               context.expiresAt > now(),
-              let prepared = preparedPIDPresentations.removeValue(forKey: id),
-              prepared.authorizationGenerationID == context.generationID,
-              prepared.requiredClaimIDs.isSubset(of: selectedClaimIDs),
+              let selectedCredentialID,
+              let session = preparedPIDPresentations.removeValue(forKey: id),
+              session.authorizationGenerationID == context.generationID,
+              let prepared = session.candidates[selectedCredentialID],
+              prepared.requiredClaimIDs == selectedClaimIDs,
               let keyUUID = UUID(uuidString: prepared.credential.holderKeyReference) else {
             throw OpenID4VCBackendError.invalidPresentationResponse
         }
@@ -1508,15 +1561,22 @@ public actor OpenID4VCW3CBackend {
                 selectedClaimIDs.contains($0) ? disclosures[$0] : nil
             }
             let withoutKeyBinding = ([issuerJWT] + selectedDisclosures).joined(separator: "~") + "~"
+            var payload: [String: Any] = [
+                "aud": audience,
+                "nonce": challenge.nonce,
+                "iat": Int(now().timeIntervalSince1970),
+                "sd_hash": Data(SHA256.hash(data: Data(withoutKeyBinding.utf8))).base64URLEncodedString(),
+            ]
+            if !challenge.transactionData.isEmpty {
+                payload["transaction_data_hashes"] = challenge.transactionData.map {
+                    Data(SHA256.hash(data: Data($0.encoded.utf8))).base64URLEncodedString()
+                }
+                payload["transaction_data_hashes_alg"] = "sha-256"
+            }
             presentation = withoutKeyBinding + (try await signedPresentationJWT(
                 keyID: keyID,
                 type: "kb+jwt",
-                payload: [
-                    "aud": audience,
-                    "nonce": challenge.nonce,
-                    "iat": Int(now().timeIntervalSince1970),
-                    "sd_hash": Data(SHA256.hash(data: Data(withoutKeyBinding.utf8))).base64URLEncodedString(),
-                ]
+                payload: payload
             ))
         case let .jwtVC11(compactCredential):
             let publicKey = try await keyProvider.publicKey(id: keyID)
@@ -1566,12 +1626,13 @@ public actor OpenID4VCW3CBackend {
                 ]
             )
         }
-        let object = try JSONSerialization.data(withJSONObject: [prepared.queryID: [presentation]])
+        let object = try JSONSerialization.data(withJSONObject: [session.queryID: [presentation]])
         return String(decoding: object, as: UTF8.self)
     }
 
     public func completeStoredOpenID4VPPresentation(
         id: UUID,
+        selectedCredentialID: UUID?,
         selectedClaimIDs: Set<String>,
         userAccepted: Bool
     ) async throws -> URL? {
@@ -1599,7 +1660,11 @@ public actor OpenID4VCW3CBackend {
               let responseURI = challenge.responseURI else {
             throw OpenID4VCBackendError.unknownTransaction
         }
-        let token = try await storedPIDPresentationToken(id: id, selectedClaimIDs: selectedClaimIDs)
+        let token = try await storedPIDPresentationToken(
+            id: id,
+            selectedCredentialID: selectedCredentialID,
+            selectedClaimIDs: selectedClaimIDs
+        )
         let redirectURI = try await submitStandaloneDirectPost(
             responseURI: responseURI,
             fields: ["vp_token": token, "state": challenge.state]
@@ -2417,6 +2482,7 @@ public actor OpenID4VCW3CBackend {
             displayName: staged[0].result.displayName, issuerIdentifier: staged[0].result.issuerIdentifier,
             profileID: staged[0].result.profileID, representation: staged[0].result.representation,
             hasStatusReference: staged[0].result.hasStatusReference,
+            validFrom: staged[0].result.validFrom, validUntil: staged[0].result.validUntil,
             displayClaims: staged[0].result.displayClaims, display: staged[0].result.display,
             refreshContinuation: rotated
         )
@@ -2460,7 +2526,10 @@ public actor OpenID4VCW3CBackend {
             rawCredential: pending.replacement.rawCredential, profile: profile, expectedIssuer: nil,
             expectedHolderDID: pending.continuation.holderIdentity.did, at: now()
         )
+        let validity = try Self.credentialValidity(raw: pending.replacement.rawCredential, profile: profile)
         guard validation.issuer == pending.result.issuerIdentifier,
+              validity.validFrom == pending.result.validFrom,
+              validity.validUntil == pending.result.validUntil,
               validation.isVerified || pending.signerVerificationUnavailable == true else {
             throw OpenID4VCBackendError.refreshCredentialMismatch
         }
@@ -2598,7 +2667,10 @@ public actor OpenID4VCW3CBackend {
                 expectedHolderDID: state.holderIdentity.did,
                 at: now()
             )
+            let validity = try Self.credentialValidity(raw: item.stored.rawCredential, profile: profile)
             guard validation.issuer == item.issued.issuerIdentifier,
+                  validity.validFrom == item.issued.validFrom,
+                  validity.validUntil == item.issued.validUntil,
                   validation.isVerified || item.signerVerificationUnavailable == true else {
                 throw OpenID4VCBackendError.invalidResponse
             }
@@ -2760,6 +2832,7 @@ public actor OpenID4VCW3CBackend {
                 expectedHolderDID: holderIdentity.did,
                 at: now()
             )
+            let validity = try Self.credentialValidity(raw: raw, profile: selectedProfile)
             let stored = StoredEbsiCredential(
                 profileID: selectedProfile.id,
                 representation: selectedProfile.representation,
@@ -2775,6 +2848,8 @@ public actor OpenID4VCW3CBackend {
                 profileID: stored.profileID,
                 representation: stored.representation,
                 hasStatusReference: Self.hasCredentialStatus(raw: raw, profile: selectedProfile),
+                validFrom: validity.validFrom,
+                validUntil: validity.validUntil,
                 displayClaims: Self.displayClaims(
                     raw: String(decoding: raw, as: UTF8.self), profile: selectedProfile
                 ),
@@ -2788,6 +2863,65 @@ public actor OpenID4VCW3CBackend {
             ))
         }
         return staged
+    }
+
+    private static func credentialValidity(
+        raw: Data,
+        profile: EbsiCredentialProfile
+    ) throws -> (validFrom: Date?, validUntil: Date?) {
+        let compact = String(decoding: raw, as: UTF8.self)
+        let issuerJWT = compact.split(separator: "~", omittingEmptySubsequences: false).first.map(String.init) ?? compact
+        let parts = issuerJWT.split(separator: ".", omittingEmptySubsequences: false)
+        guard parts.count == 3 else { throw EbsiCredentialError.malformedCredential }
+        var encoded = String(parts[1]).replacingOccurrences(of: "-", with: "+")
+            .replacingOccurrences(of: "_", with: "/")
+        encoded += String(repeating: "=", count: (4 - encoded.count % 4) % 4)
+        guard let data = Data(base64Encoded: encoded),
+              let payload = try? JSONDecoder().decode([String: AnySendableJSON].self, from: data) else {
+            throw EbsiCredentialError.malformedCredential
+        }
+
+        switch profile.representation {
+        case .dcSdJwt, .vcdm2SdJwt:
+            return (
+                try validityDate(payload["nbf"] ?? payload["iat"], numeric: true),
+                try validityDate(payload["exp"], numeric: true)
+            )
+        case .jwtVcJson where profile.dataModel == .v1_1,
+             .jwtVcJsonLd where profile.dataModel == .v1_1:
+            guard let credential = payload["vc"]?.object else {
+                throw EbsiCredentialError.malformedCredential
+            }
+            return (
+                try validityDate(credential["issuanceDate"] ?? payload["nbf"], numeric: credential["issuanceDate"] == nil),
+                try validityDate(credential["expirationDate"] ?? payload["exp"], numeric: credential["expirationDate"] == nil)
+            )
+        case .jwtVcJson, .jwtVcJsonLd, .vcdm2Jwt:
+            return (
+                try validityDate(payload["validFrom"] ?? payload["nbf"], numeric: payload["validFrom"] == nil),
+                try validityDate(payload["validUntil"] ?? payload["exp"], numeric: payload["validUntil"] == nil)
+            )
+        case .dataIntegrity:
+            return (nil, nil)
+        }
+    }
+
+    private static func validityDate(_ value: AnySendableJSON?, numeric: Bool) throws -> Date? {
+        guard let value else { return nil }
+        if numeric {
+            guard case let .number(seconds) = value, seconds.isFinite else {
+                throw EbsiCredentialError.malformedCredential
+            }
+            return Date(timeIntervalSince1970: seconds)
+        }
+        guard case let .string(string) = value else { throw EbsiCredentialError.malformedCredential }
+        let fractional = ISO8601DateFormatter()
+        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = fractional.date(from: string) { return date }
+        let standard = ISO8601DateFormatter()
+        standard.formatOptions = [.withInternetDateTime]
+        guard let date = standard.date(from: string) else { throw EbsiCredentialError.malformedCredential }
+        return date
     }
 
     private func credentialSignerWarning(for issuers: [String]) async -> EbsiTrustWarning? {
@@ -3505,6 +3639,21 @@ public actor OpenID4VCW3CBackend {
         try await credentialStore.delete(id: id)
     }
 
+    public func storedCredentialValidity() async throws -> [StoredW3CCredentialValidity] {
+        let credentials = try await credentialStore.credentials()
+        return credentials.compactMap { credential in
+            guard let profile = profiles.first(where: { $0.id == credential.profileID }),
+                  let validity = try? Self.credentialValidity(raw: credential.rawCredential, profile: profile) else {
+                return nil
+            }
+            return StoredW3CCredentialValidity(
+                credentialID: credential.id,
+                validFrom: validity.validFrom,
+                validUntil: validity.validUntil
+            )
+        }
+    }
+
     private func authorizeTrust(
         transaction: Transaction,
         id: UUID,
@@ -3956,10 +4105,14 @@ private struct PreparedW3CPresentation: Sendable {
     }
 
     let credential: StoredEbsiCredential
-    let authorizationGenerationID: UUID
     let kind: Kind
     let requiredClaimIDs: Set<String>
+}
+
+private struct PreparedW3CPresentationSession: Sendable {
+    let authorizationGenerationID: UUID
     let queryID: String
+    let candidates: [UUID: PreparedW3CPresentation]
 }
 
 private struct InteractiveAuthorizationContext: Sendable {

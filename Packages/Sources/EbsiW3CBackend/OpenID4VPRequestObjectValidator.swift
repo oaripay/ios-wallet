@@ -1,6 +1,16 @@
 import Foundation
 import IdentityDomain
 
+public struct OpenID4VPTransactionData: Equatable, Sendable {
+    public let encoded: String
+    public let decoded: [String: AnySendableJSON]
+
+    public init(encoded: String, decoded: [String: AnySendableJSON]) {
+        self.encoded = encoded
+        self.decoded = decoded
+    }
+}
+
 public struct VerifiedOpenID4VPRequestObject: Equatable, Sendable {
     public let clientID: String
     /// The `iss` claim of the Request Object. OpenID4VP requires wallets to
@@ -23,10 +33,8 @@ public struct VerifiedOpenID4VPRequestObject: Equatable, Sendable {
     public let signingDID: String?
     public let issuedAt: Date?
     public let expiresAt: Date?
-    /// Decoded `transaction_data` entries. Each wire-level entry is a
-    /// base64url-encoded JSON object; the decoded objects are retained so the
-    /// wallet can display them to the user before approving a presentation.
-    public let transactionData: [[String: AnySendableJSON]]
+    /// Exact encoded and decoded `transaction_data` entries.
+    public let transactionData: [OpenID4VPTransactionData]
 
     public init(
         clientID: String,
@@ -42,7 +50,7 @@ public struct VerifiedOpenID4VPRequestObject: Equatable, Sendable {
         signingDID: String? = nil,
         issuedAt: Date? = nil,
         expiresAt: Date? = nil,
-        transactionData: [[String: AnySendableJSON]] = []
+        transactionData: [OpenID4VPTransactionData] = []
     ) {
         self.clientID = clientID
         self.issuer = issuer
@@ -85,10 +93,7 @@ public struct NativeOpenID4VPRequestObjectValidator: OpenID4VPRequestObjectValid
             throw OpenID4VCBackendError.invalidPresentationChallenge(reason: "signed request object was malformed")
         }
         // OpenID4VP defines transaction_data as a non-empty array of base64url
-        // strings, each encoding a JSON object. The decoded objects are carried
-        // through so the wallet can display them alongside the presentation
-        // consent. Non-array values do not match the parameter definition and
-        // are ignored as unrecognized extension parameters.
+        // strings, each encoding a JSON object.
         let transactionData = try Self.decodedTransactionData(from: payload["transaction_data"])
         guard Self.isValidURLSafeValue(nonce), Self.hasValidOptionalURLSafeValue(payload["state"]) else {
             throw OpenID4VCBackendError.invalidPresentationChallenge(reason: "signed request nonce or state was invalid")
@@ -214,18 +219,60 @@ public struct NativeOpenID4VPRequestObjectValidator: OpenID4VPRequestObjectValid
     /// of base64url strings, each encoding a plain JSON object.
     private static func decodedTransactionData(
         from value: AnySendableJSON?
-    ) throws -> [[String: AnySendableJSON]] {
-        guard case let .array(entries)? = value else { return [] }
-        guard !entries.isEmpty else {
+    ) throws -> [OpenID4VPTransactionData] {
+        guard let value else { return [] }
+        guard case let .array(entries) = value else {
             throw OpenID4VCBackendError.invalidPresentationChallenge(reason: "transaction_data was malformed")
         }
+        guard !entries.isEmpty, entries.count <= 16 else {
+            throw OpenID4VCBackendError.invalidPresentationChallenge(reason: "transaction_data was malformed")
+        }
+        var totalEncodedBytes = 0
         return try entries.map { entry in
             guard let encoded = entry.string,
+                  !encoded.isEmpty, encoded.utf8.count <= 131_072,
+                  encoded.utf8.allSatisfy({
+                      (0x30...0x39).contains($0) || (0x41...0x5A).contains($0) ||
+                          (0x61...0x7A).contains($0) || $0 == 0x2D || $0 == 0x5F
+                  }),
                   let data = Self.decodeBase64URL(encoded),
                   let object = try? JSONDecoder().decode([String: AnySendableJSON].self, from: data) else {
                 throw OpenID4VCBackendError.invalidPresentationChallenge(reason: "transaction_data was malformed")
             }
-            return object
+            totalEncodedBytes += encoded.utf8.count
+            guard totalEncodedBytes <= 262_144,
+                  isSafeTransactionValue(.object(object), depth: 0, remainingNodes: 2_000) else {
+                throw OpenID4VCBackendError.invalidPresentationChallenge(reason: "transaction_data exceeded safe display limits")
+            }
+            return OpenID4VPTransactionData(encoded: encoded, decoded: object)
+        }
+    }
+
+    private static func isSafeTransactionValue(
+        _ value: AnySendableJSON,
+        depth: Int,
+        remainingNodes: Int
+    ) -> Bool {
+        guard depth <= 16, remainingNodes > 0 else { return false }
+        switch value {
+        case let .object(object):
+            guard object.count <= 250 else { return false }
+            var remaining = remainingNodes - 1
+            for child in object.values {
+                guard isSafeTransactionValue(child, depth: depth + 1, remainingNodes: remaining) else { return false }
+                remaining -= 1
+            }
+            return remaining >= 0
+        case let .array(values):
+            guard values.count <= 250 else { return false }
+            var remaining = remainingNodes - 1
+            for child in values {
+                guard isSafeTransactionValue(child, depth: depth + 1, remainingNodes: remaining) else { return false }
+                remaining -= 1
+            }
+            return remaining >= 0
+        case let .string(value): return value.utf8.count <= 65_536
+        case .number, .bool, .null: return true
         }
     }
 

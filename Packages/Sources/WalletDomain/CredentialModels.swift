@@ -175,8 +175,10 @@ public struct CredentialRecord: Codable, Equatable, Identifiable, Sendable {
     public let issuerTrust: IssuerTrustState
     public let status: CredentialStatusState
     public let legalClassification: LegalClassification
-    public let issuedAt: Date?
-    public let expiresAt: Date?
+    public let validFrom: Date?
+    public let validUntil: Date?
+    public var issuedAt: Date? { validFrom }
+    public var expiresAt: Date? { validUntil }
     public let createdAt: Date
     public let displayClaims: [CredentialDisplayClaim]
     public let display: CredentialDisplayMetadata?
@@ -203,7 +205,9 @@ public struct CredentialRecord: Codable, Equatable, Identifiable, Sendable {
         createdAt: Date,
         displayClaims: [CredentialDisplayClaim] = [],
         display: CredentialDisplayMetadata? = nil,
-        refresh: CredentialRefreshMetadata = .manual
+        refresh: CredentialRefreshMetadata = .manual,
+        validFrom: Date? = nil,
+        validUntil: Date? = nil
     ) {
         self.id = id
         self.configurationID = configurationID
@@ -220,8 +224,8 @@ public struct CredentialRecord: Codable, Equatable, Identifiable, Sendable {
         self.issuerTrust = issuerTrust
         self.status = status
         self.legalClassification = legalClassification
-        self.issuedAt = issuedAt
-        self.expiresAt = expiresAt
+        self.validFrom = validFrom ?? issuedAt
+        self.validUntil = validUntil ?? expiresAt
         self.createdAt = createdAt
         self.displayClaims = displayClaims
         self.display = display
@@ -231,7 +235,8 @@ public struct CredentialRecord: Codable, Equatable, Identifiable, Sendable {
     private enum CodingKeys: String, CodingKey {
         case id, configurationID, walletDocumentID, backendID, backendDocumentID, displayName
         case format, profileID, issuerIdentifier, subjectIdentifier, holderBinding
-        case cryptographicValidity, issuerTrust, status, legalClassification, issuedAt, expiresAt
+        case cryptographicValidity, issuerTrust, status, legalClassification
+        case validFrom, validUntil, issuedAt, expiresAt
         case createdAt, displayClaims, display, refresh
     }
 
@@ -252,11 +257,38 @@ public struct CredentialRecord: Codable, Equatable, Identifiable, Sendable {
         issuerTrust = try values.decode(IssuerTrustState.self, forKey: .issuerTrust)
         status = try values.decode(CredentialStatusState.self, forKey: .status)
         legalClassification = try values.decode(LegalClassification.self, forKey: .legalClassification)
-        issuedAt = try values.decodeIfPresent(Date.self, forKey: .issuedAt)
-        expiresAt = try values.decodeIfPresent(Date.self, forKey: .expiresAt)
+        validFrom = try values.decodeIfPresent(Date.self, forKey: .validFrom)
+            ?? values.decodeIfPresent(Date.self, forKey: .issuedAt)
+        validUntil = try values.decodeIfPresent(Date.self, forKey: .validUntil)
+            ?? values.decodeIfPresent(Date.self, forKey: .expiresAt)
         createdAt = try values.decode(Date.self, forKey: .createdAt)
         displayClaims = try values.decode([CredentialDisplayClaim].self, forKey: .displayClaims)
         display = try values.decodeIfPresent(CredentialDisplayMetadata.self, forKey: .display)
         refresh = try values.decodeIfPresent(CredentialRefreshMetadata.self, forKey: .refresh) ?? .manual
+    }
+
+    public func encode(to encoder: any Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(id, forKey: .id)
+        try values.encode(configurationID, forKey: .configurationID)
+        try values.encodeIfPresent(walletDocumentID, forKey: .walletDocumentID)
+        try values.encodeIfPresent(backendID, forKey: .backendID)
+        try values.encodeIfPresent(backendDocumentID, forKey: .backendDocumentID)
+        try values.encode(displayName, forKey: .displayName)
+        try values.encode(format, forKey: .format)
+        try values.encode(profileID, forKey: .profileID)
+        try values.encode(issuerIdentifier, forKey: .issuerIdentifier)
+        try values.encodeIfPresent(subjectIdentifier, forKey: .subjectIdentifier)
+        try values.encodeIfPresent(holderBinding, forKey: .holderBinding)
+        try values.encode(cryptographicValidity, forKey: .cryptographicValidity)
+        try values.encode(issuerTrust, forKey: .issuerTrust)
+        try values.encode(status, forKey: .status)
+        try values.encode(legalClassification, forKey: .legalClassification)
+        try values.encodeIfPresent(validFrom, forKey: .validFrom)
+        try values.encodeIfPresent(validUntil, forKey: .validUntil)
+        try values.encode(createdAt, forKey: .createdAt)
+        try values.encode(displayClaims, forKey: .displayClaims)
+        try values.encodeIfPresent(display, forKey: .display)
+        try values.encode(refresh, forKey: .refresh)
     }
 }

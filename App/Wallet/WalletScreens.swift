@@ -381,8 +381,18 @@ private struct CredentialDetailView: View {
                     detailRow("Current status", model.documentStatus(for: displayedCredential) ?? "Unavailable")
                     detailRow("Credential status", displayedCredential.status.displayText)
                     detailRow("Issuer trust", displayedCredential.issuerTrust.rawValue)
-                    if let issuedAt = displayedCredential.issuedAt { detailRow("Issued", issuedAt.formatted(date: .abbreviated, time: .omitted)) }
-                    if let expiresAt = displayedCredential.expiresAt { detailRow("Expires", expiresAt.formatted(date: .abbreviated, time: .omitted)) }
+                    if let validFrom = displayedCredential.validFrom {
+                        detailRow("Valid from", validFrom.formatted(date: .abbreviated, time: .shortened))
+                    }
+                    if let validUntil = displayedCredential.validUntil {
+                        detailRow("Valid until", validUntil.formatted(date: .abbreviated, time: .shortened))
+                    } else if displayedCredential.validFrom != nil {
+                        detailRow("Valid until", "No expiration")
+                    }
+                    if let validityMessage {
+                        Label(validityMessage.text, systemImage: validityMessage.icon)
+                            .foregroundStyle(validityMessage.color)
+                    }
                 }
                 Section("Credential") {
                     detailRow("Format", displayedCredential.format.rawValue)
@@ -457,6 +467,17 @@ private struct CredentialDetailView: View {
         .task(id: credential.id) {
             supportsRefresh = await model.canRefreshCredential(credential)
         }
+    }
+
+    private var validityMessage: (text: String, icon: String, color: Color)? {
+        let now = Date()
+        if let validFrom = displayedCredential.validFrom, validFrom > now {
+            return ("Not yet valid", "clock.badge.exclamationmark", .orange)
+        }
+        if let validUntil = displayedCredential.validUntil, validUntil <= now {
+            return ("Expired", "exclamationmark.triangle.fill", .red)
+        }
+        return nil
     }
 
     private var refreshStateText: String {

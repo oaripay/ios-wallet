@@ -7,6 +7,64 @@ import Testing
 import WalletDomain
 
 struct EudiWalletKitAdapterTests {
+    @Test("Structured transaction values preserve nested consent data")
+    func structuredTransactionValues() {
+        let value = EudiTransactionDataValue.object([
+            "amount": .object([
+                "currency": .string("EUR"),
+                "value": .number("125.50")
+            ]),
+            "recipients": .array([
+                .object(["name": .string("Example Merchant")]),
+                .null
+            ]),
+            "recurring": .bool(false)
+        ])
+        let field = EudiTransactionDataField(id: "transaction-0.payment", key: "Payment", value: value)
+
+        #expect(field.id == "transaction-0.payment")
+        #expect(field.value == value)
+    }
+
+    @Test("Presentation credential retains wallet artwork and issuer metadata")
+    func presentationCredentialMetadata() {
+        let display = CredentialDisplayMetadata(
+            locale: "en",
+            description: "Identity credential",
+            backgroundColor: "#123456",
+            textColor: "#FFFFFF"
+        )
+        let credential = EudiPresentationCredential(
+            id: "document-1",
+            displayName: "Digital ID",
+            issuerIdentifier: "https://issuer.example",
+            configurationID: "pid",
+            format: .sdJWTVC,
+            profileID: "eudi",
+            representation: "sdjwt",
+            receivedAt: .distantPast,
+            display: display
+        )
+
+        #expect(credential.issuerIdentifier == "https://issuer.example")
+        #expect(credential.configurationID == "pid")
+        #expect(credential.display == display)
+    }
+
+    @Test("Native document summary carries normalized validity")
+    func documentSummaryValidity() {
+        let validFrom = Date(timeIntervalSince1970: 1_700_000_000)
+        let validUntil = Date(timeIntervalSince1970: 1_800_000_000)
+        let summary = EudiWalletDocumentSummary(
+            id: "document-1", documentType: "eu.europa.ec.eudi.pid.1",
+            displayName: "PID", format: "cbor", status: "issued",
+            validFrom: validFrom, validUntil: validUntil
+        )
+
+        #expect(summary.validFrom == validFrom)
+        #expect(summary.validUntil == validUntil)
+    }
+
     @Test("HAIP issuance is normalized only at the Wallet Kit boundary")
     func haipIssuanceNormalization() throws {
         let source = "haip-vci://authorize?credential_offer_uri=https%3A%2F%2Fissuer.example%2Foffer%3Fpin%3Da%252Bb&state=x%2By"

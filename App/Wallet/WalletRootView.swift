@@ -65,7 +65,8 @@ struct WalletRootView: View {
             set: { if !$0 { model.dismissEudiFlow() } }
         )) {
             EudiFlowView(model: model)
-                .presentationDetents([.medium, .large])
+                .presentationDetents([.large])
+                .presentationDragIndicator(.visible)
                 .interactiveDismissDisabled(model.preventsInteractiveFlowDismissal)
         }
         .fullScreenCover(isPresented: $model.showsOnboarding) {

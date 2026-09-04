@@ -45,6 +45,7 @@ final class WalletAppModel: ObservableObject {
     @Published private(set) var eudiFlow: EudiFlow = .idle
     @Published var selectedIssuanceConfigurationIDs: Set<String> = []
     @Published var selectedClaimIDs: Set<String> = []
+    @Published var selectedPresentationOptionID: String?
     @Published var selectedCredential: CredentialRecord?
     @Published private(set) var walletDocumentSummaries: [String: EudiWalletDocumentSummary] = [:]
     @Published private(set) var credentialActionState: CredentialActionState = .idle
@@ -196,6 +197,7 @@ final class WalletAppModel: ObservableObject {
             appLockAuthenticator = dependencies.appLockAuthenticator
             appLockAuthenticationKind = dependencies.appLockAuthenticator.availability()
             repositories = (dependencies.credentials, dependencies.audit)
+            await dependencies.openID4VCWallet?.backfillCredentialValidity()
             if isEudiOperational, let eudiWallet {
                 let snapshot = try await eudiWallet.loadStartupSnapshot()
                 credentials = snapshot.metadata.isEmpty
@@ -652,7 +654,7 @@ final class WalletAppModel: ObservableObject {
                         let request = try await openID4VCWallet.beginPresentation(uri: scanInput)
                         activeOpenID4VCInteractionID = request.id
                         activeStandaloneOpenID4VPPresentation = true
-                        selectedClaimIDs = Set(request.claims.filter(\.required).map(\.id))
+                        configurePresentation(request)
                         eudiFlow = .presentationConsent(request)
                         return
                     } catch EbsiCredentialError.unsupportedRepresentation {
@@ -661,7 +663,7 @@ final class WalletAppModel: ObservableObject {
                 }
                 let eudiWallet = try await requireEudiWallet()
                 let request = try await eudiWallet.beginOpenID4VPPresentation(requestURI: scanInput)
-                selectedClaimIDs = Set(request.claims.filter(\.required).map(\.id))
+                configurePresentation(request)
                 eudiFlow = .presentationConsent(request)
             case .eudiAuthorizationCallback, .unsupported:
                 break
@@ -764,7 +766,7 @@ final class WalletAppModel: ObservableObject {
                 eudiFlow = .working("Preparing W3C PID presentation…")
                 let request = try await openID4VCWallet.preparePIDPresentation(id: id)
                 activeIssuerAuthorizationPresentation = true
-                selectedClaimIDs = Set(request.claims.filter(\.required).map(\.id))
+                configurePresentation(request)
                 eudiFlow = .presentationConsent(request)
             } catch {
                 eudiFlow = .failed(Self.safeMessage(error))
@@ -791,7 +793,7 @@ final class WalletAppModel: ObservableObject {
         do {
             eudiFlow = .working("Preparing PID presentation…")
             let request = try await eudiWallet.beginOpenID4VPPresentation(requestURI: requestURI)
-            selectedClaimIDs = Set(request.claims.filter(\.required).map(\.id))
+            configurePresentation(request)
             eudiFlow = .presentationConsent(request)
         } catch {
             eudiFlow = .failed(Self.safeMessage(error))
@@ -1013,10 +1015,24 @@ final class WalletAppModel: ObservableObject {
             activePendingIssuanceID = pending.id
             activePendingIssuance = pending
             let request = try await eudiWallet.beginPendingIssuancePresentation(id: pending.id)
-            selectedClaimIDs = Set(request.claims.filter(\.required).map(\.id))
+            configurePresentation(request)
             eudiFlow = .presentationConsent(request)
         } catch {
             eudiFlow = .failed(Self.safeMessage(error))
+        }
+    }
+
+    func selectPresentationOption(_ option: EudiPresentationOption) {
+        selectedPresentationOptionID = option.id
+        selectedClaimIDs = Set(option.claims.filter(\.required).map(\.id))
+    }
+
+    private func configurePresentation(_ request: EudiPresentationRequest) {
+        if let option = request.options.first {
+            selectPresentationOption(option)
+        } else {
+            selectedPresentationOptionID = request.credentials.count == 1 ? request.credentials.first?.id : nil
+            selectedClaimIDs = Set(request.claims.filter(\.required).map(\.id))
         }
     }
 
@@ -1033,6 +1049,7 @@ final class WalletAppModel: ObservableObject {
                 }
                 let response = try await openID4VCWallet.completePresentation(
                     id: id,
+                    selectedOptionID: accepted ? selectedPresentationOptionID : nil,
                     selectedClaimIDs: accepted ? selectedClaimIDs : [],
                     userAccepted: accepted
                 )
@@ -1040,6 +1057,7 @@ final class WalletAppModel: ObservableObject {
                 activeStandaloneOpenID4VPPresentation = false
                 activeOpenID4VCInteractionID = nil
                 selectedClaimIDs = []
+                selectedPresentationOptionID = nil
                 eudiFlow = .completed(accepted ? "Approved claims were shared." : "Request declined. Nothing was shared.")
                 return
             }
@@ -1051,6 +1069,7 @@ final class WalletAppModel: ObservableObject {
                 }
                 let result = try await openID4VCWallet.completePIDPresentation(
                     id: id,
+                    selectedOptionID: accepted ? selectedPresentationOptionID : nil,
                     selectedClaimIDs: accepted ? selectedClaimIDs : [],
                     userAccepted: accepted
                 )
@@ -1067,6 +1086,7 @@ final class WalletAppModel: ObservableObject {
             let completion = try await eudiWallet.completePresentation(
                 id: request.id,
                 pendingIssuanceID: activePendingIssuanceID,
+                selectedOptionID: accepted ? selectedPresentationOptionID : nil,
                 selectedClaimIDs: accepted ? selectedClaimIDs : [],
                 userAccepted: accepted
             )
@@ -1227,6 +1247,7 @@ final class WalletAppModel: ObservableObject {
         selectedTab = .wallet
         selectedIssuanceConfigurationIDs = []
         selectedClaimIDs = []
+        selectedPresentationOptionID = nil
         openID4VCTransactionCode = ""
         activeOpenID4VCInteractionID = nil
         activeOpenID4VCInteraction = nil

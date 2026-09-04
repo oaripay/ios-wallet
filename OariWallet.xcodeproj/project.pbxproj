@@ -12,8 +12,8 @@
 		17720D8DDE4ECE295FC2F85C /* ProtocolEngine in Frameworks */ = {isa = PBXBuildFile; productRef = 9265AFC7F1BD144B84E537E1 /* ProtocolEngine */; };
 		19C8E576FC6C967F662642B3 /* EudiReferenceDemoConfigurationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E7D538593C4F633BF3F4A85A /* EudiReferenceDemoConfigurationTests.swift */; };
 		1BB8DAD1FBD782E5EF65E35F /* AppConfiguration.swift in Sources */ = {isa = PBXBuildFile; fileRef = EDE0B466C06C9A83F0B96402 /* AppConfiguration.swift */; };
-		2477B390A0E14EBAB2500E01 /* CredentialMaintenanceCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2477B390A0E14EBAB2500E02 /* CredentialMaintenanceCoordinator.swift */; };
 		2987A6871999EA431534789E /* WalletVault in Frameworks */ = {isa = PBXBuildFile; productRef = 1C2BC55F8C4AD87C59681B4D /* WalletVault */; };
+		37853F808C1E0CD6ADE7AE25 /* InAppBrowserView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9F88FF35B9D5CD1928BBC05B /* InAppBrowserView.swift */; };
 		3E54C6BBA77BB4407A664F2E /* EudiReferenceDemoConfiguration.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2089D4672839DD02C215BFA /* EudiReferenceDemoConfiguration.swift */; };
 		56AC9B51A77EB269F7C93EEB /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = AC752FBC05CF634F1B02FCD2 /* PrivacyInfo.xcprivacy */; };
 		5717B6F81D0194A1F51BD588 /* WalletRootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3E9F8E56550C5E924AEE7786 /* WalletRootView.swift */; };
@@ -22,6 +22,7 @@
 		66D008AA58F216596C073300 /* CameraQRScannerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BC4372382A01471E0DA73729 /* CameraQRScannerView.swift */; };
 		6A2D7659C18E4B273DA1302A /* EudiWalletService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A7B5979EF55B808B4F064CBE /* EudiWalletService.swift */; };
 		75557E3BEC43035109485B28 /* AppIcon.icon in Resources */ = {isa = PBXBuildFile; fileRef = 28E7C044AA3C524CAEC5A267 /* AppIcon.icon */; };
+		7FB87BCE7DDC7423CAECE89B /* CredentialMaintenanceCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 587126E2BCBD89381316E37B /* CredentialMaintenanceCoordinator.swift */; };
 		82646659A1496DE955924E7D /* WalletKitIOSIntegrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BBDE0CBAB3548D875B281AA6 /* WalletKitIOSIntegrationTests.swift */; };
 		8F6ACDE42277AB26BCB496F6 /* OpenID4VCService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9BFABEDAD628D2A7B1C46E66 /* OpenID4VCService.swift */; };
 		A2D80936293E225FFAA56E82 /* TrustWarningView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 571F63C0FA7EF5505E66EE57 /* TrustWarningView.swift */; };
@@ -30,7 +31,6 @@
 		BB5F75258CF99035C9D5D1AA /* TestTrustAnchor.bin in Resources */ = {isa = PBXBuildFile; fileRef = 4FE288BD4E8DB12A11690ACD /* TestTrustAnchor.bin */; };
 		CDFB3AAE87954A256CB95928 /* WalletScreens.swift in Sources */ = {isa = PBXBuildFile; fileRef = AF4CC319F9004EBC89FABAFF /* WalletScreens.swift */; };
 		D18A95A7B7FD98ACDA72A7F7 /* EudiFlowView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 06ABCD0EEEA385B44E0E33E3 /* EudiFlowView.swift */; };
-		D3B7E4A1C8F65290B4E6D713 /* InAppBrowserView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D3B7E4A1C8F65290B4E6D712 /* InAppBrowserView.swift */; };
 		D71990BF3F9B61F7D4199D6B /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A42FEE8B9F9E193FDA5D20AF /* Assets.xcassets */; };
 		D9FC377A1A7DDCB1E684F0E8 /* WalletAppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8542411F919BDCF644BA9608 /* WalletAppModel.swift */; };
 		DC6FB72F96D2EA04AB8A1894 /* OariDesignSystem in Frameworks */ = {isa = PBXBuildFile; productRef = 91D2FD24D582D45EA9F6E775 /* OariDesignSystem */; };
@@ -60,7 +60,6 @@
 		06ABCD0EEEA385B44E0E33E3 /* EudiFlowView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EudiFlowView.swift; sourceTree = "<group>"; };
 		224B56402382ABFCD8039AA8 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		23A185124BFC23810801CEC1 /* OariWalletApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OariWalletApp.swift; sourceTree = "<group>"; };
-		2477B390A0E14EBAB2500E02 /* CredentialMaintenanceCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CredentialMaintenanceCoordinator.swift; sourceTree = "<group>"; };
 		286031545802A58CB1A31335 /* WalletUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WalletUITests.swift; sourceTree = "<group>"; };
 		28E7C044AA3C524CAEC5A267 /* AppIcon.icon */ = {isa = PBXFileReference; lastKnownFileType = wrapper.icon; path = AppIcon.icon; sourceTree = "<group>"; };
 		3E9F8E56550C5E924AEE7786 /* WalletRootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WalletRootView.swift; sourceTree = "<group>"; };
@@ -68,10 +67,12 @@
 		4FE288BD4E8DB12A11690ACD /* TestTrustAnchor.bin */ = {isa = PBXFileReference; lastKnownFileType = archive.macbinary; path = TestTrustAnchor.bin; sourceTree = "<group>"; };
 		56CF0408E5CAED1AC29C92CB /* WalletKitRuntimeProbe.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WalletKitRuntimeProbe.swift; sourceTree = "<group>"; };
 		571F63C0FA7EF5505E66EE57 /* TrustWarningView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TrustWarningView.swift; sourceTree = "<group>"; };
+		587126E2BCBD89381316E37B /* CredentialMaintenanceCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CredentialMaintenanceCoordinator.swift; sourceTree = "<group>"; };
 		8542411F919BDCF644BA9608 /* WalletAppModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WalletAppModel.swift; sourceTree = "<group>"; };
 		97A15E0BE6ACA09A914CCF44 /* OariWallet.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = OariWallet.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		9A28098C49ABBDC5A6B792F5 /* WalletAppModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WalletAppModelTests.swift; sourceTree = "<group>"; };
 		9BFABEDAD628D2A7B1C46E66 /* OpenID4VCService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenID4VCService.swift; sourceTree = "<group>"; };
+		9F88FF35B9D5CD1928BBC05B /* InAppBrowserView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InAppBrowserView.swift; sourceTree = "<group>"; };
 		A173F8F1FF8FA4B69FBCBB21 /* WalletTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = WalletTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		A42FEE8B9F9E193FDA5D20AF /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		A7B5979EF55B808B4F064CBE /* EudiWalletService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EudiWalletService.swift; sourceTree = "<group>"; };
@@ -81,7 +82,6 @@
 		BC4372382A01471E0DA73729 /* CameraQRScannerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraQRScannerView.swift; sourceTree = "<group>"; };
 		D05DB91852A9414277DCB1E8 /* ios-wallet */ = {isa = PBXFileReference; lastKnownFileType = folder; name = "ios-wallet"; path = .; sourceTree = SOURCE_ROOT; };
 		D2089D4672839DD02C215BFA /* EudiReferenceDemoConfiguration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EudiReferenceDemoConfiguration.swift; sourceTree = "<group>"; };
-		D3B7E4A1C8F65290B4E6D712 /* InAppBrowserView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InAppBrowserView.swift; sourceTree = "<group>"; };
 		D762A0C443533ADDF34A33F6 /* WalletAppDependencies.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WalletAppDependencies.swift; sourceTree = "<group>"; };
 		E7D538593C4F633BF3F4A85A /* EudiReferenceDemoConfigurationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EudiReferenceDemoConfigurationTests.swift; sourceTree = "<group>"; };
 		EDE0B466C06C9A83F0B96402 /* AppConfiguration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppConfiguration.swift; sourceTree = "<group>"; };
@@ -127,8 +127,8 @@
 			isa = PBXGroup;
 			children = (
 				06ABCD0EEEA385B44E0E33E3 /* EudiFlowView.swift */,
-				D3B7E4A1C8F65290B4E6D712 /* InAppBrowserView.swift */,
 				A7B5979EF55B808B4F064CBE /* EudiWalletService.swift */,
+				9F88FF35B9D5CD1928BBC05B /* InAppBrowserView.swift */,
 				9BFABEDAD628D2A7B1C46E66 /* OpenID4VCService.swift */,
 				571F63C0FA7EF5505E66EE57 /* TrustWarningView.swift */,
 				4817D2919B0E5EDD552FAF07 /* W3CBackendComposition.swift */,
@@ -169,7 +169,7 @@
 			isa = PBXGroup;
 			children = (
 				EDE0B466C06C9A83F0B96402 /* AppConfiguration.swift */,
-				2477B390A0E14EBAB2500E02 /* CredentialMaintenanceCoordinator.swift */,
+				587126E2BCBD89381316E37B /* CredentialMaintenanceCoordinator.swift */,
 				23A185124BFC23810801CEC1 /* OariWalletApp.swift */,
 				D762A0C443533ADDF34A33F6 /* WalletAppDependencies.swift */,
 				8542411F919BDCF644BA9608 /* WalletAppModel.swift */,
@@ -363,12 +363,12 @@
 			buildActionMask = 2147483647;
 			files = (
 				1BB8DAD1FBD782E5EF65E35F /* AppConfiguration.swift in Sources */,
-				2477B390A0E14EBAB2500E01 /* CredentialMaintenanceCoordinator.swift in Sources */,
 				66D008AA58F216596C073300 /* CameraQRScannerView.swift in Sources */,
+				7FB87BCE7DDC7423CAECE89B /* CredentialMaintenanceCoordinator.swift in Sources */,
 				D18A95A7B7FD98ACDA72A7F7 /* EudiFlowView.swift in Sources */,
-				D3B7E4A1C8F65290B4E6D713 /* InAppBrowserView.swift in Sources */,
 				3E54C6BBA77BB4407A664F2E /* EudiReferenceDemoConfiguration.swift in Sources */,
 				6A2D7659C18E4B273DA1302A /* EudiWalletService.swift in Sources */,
+				37853F808C1E0CD6ADE7AE25 /* InAppBrowserView.swift in Sources */,
 				F2EC4943CE05D1699EED4BF7 /* OariWalletApp.swift in Sources */,
 				8F6ACDE42277AB26BCB496F6 /* OpenID4VCService.swift in Sources */,
 				A2D80936293E225FFAA56E82 /* TrustWarningView.swift in Sources */,
