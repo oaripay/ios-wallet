@@ -531,6 +531,7 @@ public enum OpenID4VCBackendError: Error, Equatable, Sendable {
     case malformedOffer
     case unsafeEndpoint
     case unsupportedGrant
+    case unsupportedRepresentation
     case invalidTransactionCode
     case untrustedConsentRequired
     case rejectedTrust
@@ -727,13 +728,13 @@ public actor OpenID4VCW3CBackend {
         }
         let selectedConfigurations = try offer.credentialConfigurationIds.map { configurationID in
             guard let configuration = issuerMetadata.credentialConfigurations[configurationID] else {
-                throw OpenID4VCBackendError.unsupportedGrant
+                throw OpenID4VCBackendError.invalidResponse
             }
             return configuration
         }
         let representations = selectedConfigurations.map(\.format)
         guard representations.allSatisfy(Self.supportedRepresentation) else {
-            throw OpenID4VCBackendError.unsupportedGrant
+            throw OpenID4VCBackendError.unsupportedRepresentation
         }
         // `credential_issuer` identifies the HTTPS protocol service, not the
         // credential signer. Its identity is established by the HTTPS and
@@ -3066,7 +3067,7 @@ public actor OpenID4VCW3CBackend {
             let candidates = profiles.filter {
                 switch format {
                 case "jwt_vc_json":
-                    $0.representation == .jwtVcJson || $0.representation == .vcdm2Jwt
+                    $0.representation == .jwtVcJson
                 case "application/vc+jwt":
                     $0.representation == .vcdm2Jwt
                 default:
@@ -3074,18 +3075,24 @@ public actor OpenID4VCW3CBackend {
                         $0.representation == .vcdm2Jwt
                 }
             }
-            if context == "https://www.w3.org/ns/credentials/v2",
-               let profile = candidates.first(where: { $0.dataModel == .v2_0 }) {
+            if context == "https://www.w3.org/ns/credentials/v2" {
+                let matches = candidates.filter { $0.dataModel == .v2_0 }
+                guard matches.count == 1, let profile = matches.first else {
+                    throw EbsiCredentialError.dataModelMismatch
+                }
                 return profile
             }
-            if context == "https://www.w3.org/2018/credentials/v1",
-               let profile = candidates.first(where: { $0.dataModel == .v1_1 }) {
+            if context == "https://www.w3.org/2018/credentials/v1" {
+                let matches = candidates.filter { $0.dataModel == .v1_1 }
+                guard matches.count == 1, let profile = matches.first else {
+                    throw EbsiCredentialError.dataModelMismatch
+                }
                 return profile
             }
             if context == nil, candidates.count == 1, let profile = candidates.first {
                 return profile
             }
-            throw EbsiCredentialError.profileMismatch
+            throw EbsiCredentialError.dataModelMismatch
         }
         throw EbsiCredentialError.unsupportedRepresentation
     }

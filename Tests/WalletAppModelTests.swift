@@ -430,13 +430,13 @@ struct WalletAppModelTests {
         }
     }
 
-    @Test("W3C validation errors do not fall through to Wallet Kit")
-    func w3cErrorsRetainBackendOwnership() async {
+    @Test("W3C protocol errors do not fall through to Wallet Kit", arguments: [
+        OpenID4VCBackendError.invalidResponse,
+        OpenID4VCBackendError.unsupportedGrant,
+    ])
+    func w3cErrorsRetainBackendOwnership(resolveError: OpenID4VCBackendError) async {
         let eudi = FixtureEudiWallet()
-        let w3c = FixtureOpenID4VCWallet(
-            outcome: .allow,
-            resolveError: .invalidResponse
-        )
+        let w3c = FixtureOpenID4VCWallet(outcome: .allow, resolveError: resolveError)
         let model = WalletAppModel()
         await model.load(.success(WalletAppDependencies(
             credentials: EmptyMetadataRepository(), audit: EmptyAuditRepository(),
@@ -456,7 +456,7 @@ struct WalletAppModelTests {
         let eudi = FixtureEudiWallet()
         let w3c = FixtureOpenID4VCWallet(
             outcome: .allow,
-            resolveError: .unsupportedGrant
+            resolveError: .unsupportedRepresentation
         )
         let model = WalletAppModel()
         await model.load(.success(WalletAppDependencies(

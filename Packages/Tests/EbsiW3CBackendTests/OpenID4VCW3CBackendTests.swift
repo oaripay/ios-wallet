@@ -1054,7 +1054,7 @@ struct OpenID4VCW3CBackendTests {
         #expect(!(await transport.requests).contains { $0.url.path.hasSuffix("/token") })
     }
 
-    @Test("VCDM2 credential context overrides a legacy jwt_vc_json metadata label")
+    @Test("jwt_vc_json selects its VCDM2 representation independently of registration order")
     func vcdm2ContextSelection() async throws {
         let credential = try Self.compactJWT(payload: [
             "@context": ["https://www.w3.org/ns/credentials/v2"],
@@ -1072,7 +1072,7 @@ struct OpenID4VCW3CBackendTests {
             credentialStore: FixtureCredentialStore(),
             credentialValidator: FixtureCredentialValidator(),
             profile: try .vcdm2JWTVC(),
-            additionalProfiles: [try .vcdm11Jwt()]
+            additionalProfiles: [try .vcdm11Jwt(), try .vcdm2JWTVCJSON()]
         )
         let offer = try await backend.resolveOffer("https://issuer.example/offer")
         let issued = try await backend.issue(
@@ -1080,8 +1080,8 @@ struct OpenID4VCW3CBackendTests {
             allowUntrusted: false,
             transactionCode: "123456"
         )
-        #expect(issued.first?.profileID == "ebsi-vcdm2-jwt-vc")
-        #expect(issued.first?.representation == .vcdm2Jwt)
+        #expect(issued.first?.profileID == "vcdm2-jwt-vc-json")
+        #expect(issued.first?.representation == .jwtVcJson)
     }
 
     @Test("Nested VCDM1.1 context selects the legacy profile for jwt_vc_json")

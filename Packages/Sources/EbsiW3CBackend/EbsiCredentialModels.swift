@@ -124,6 +124,10 @@ public enum EbsiCredentialError: Error, Equatable, Sendable {
     case invalidProfile
     case malformedCredential
     case profileMismatch
+    case dataModelMismatch
+    case invalidCredentialStructure
+    case invalidValidityPeriod
+    case registeredClaimMismatch
     case algorithmNotAllowed
     case unsupportedRepresentation
     case verificationFailed
@@ -203,7 +207,6 @@ public struct EbsiCredentialInspector: Sendable {
             guard header["typ"]?.string == "vc+jwt", payload["vc"] == nil else {
                 throw EbsiCredentialError.profileMismatch
             }
-            try Self.validateVCDM2Credential(payload, context: profile.context, at: validationDate)
         }
         var credential = payload["vc"]?.object ?? payload
         if profile.dataModel == .v1_1 {
@@ -213,6 +216,10 @@ public struct EbsiCredentialInspector: Sendable {
             credential = try Self.reconstructVCDM11Credential(credential, payload: payload)
             try Self.validateVCDM11Credential(
                 credential, payload: payload, context: profile.context, at: validationDate
+            )
+        } else {
+            try Self.validateVCDM2Credential(
+                credential, context: profile.context, at: validationDate
             )
         }
         guard credential["@context"]?.contains(string: profile.context) == true,
@@ -258,13 +265,6 @@ public struct EbsiCredentialInspector: Sendable {
         if let expirationDate, issuanceDate >= expirationDate {
             throw EbsiCredentialError.profileMismatch
         }
-        if let validationDate {
-            if validationDate < issuanceDate { throw EbsiCredentialError.profileMismatch }
-            if let expirationDate, validationDate >= expirationDate {
-                throw EbsiCredentialError.profileMismatch
-            }
-        }
-
         if let tokenIssuer = payload["iss"] {
             guard tokenIssuer.string == issuer else { throw EbsiCredentialError.profileMismatch }
         }
@@ -313,43 +313,46 @@ public struct EbsiCredentialInspector: Sendable {
         context expectedContext: String,
         at validationDate: Date?
     ) throws {
-        guard hasRequiredBaseContext(credential["@context"], expected: expectedContext),
-              Self.hasVCDM2Type(credential["type"]),
+        guard hasRequiredBaseContext(credential["@context"], expected: expectedContext) else {
+            throw EbsiCredentialError.dataModelMismatch
+        }
+        guard Self.hasVCDM2Type(credential["type"]),
               let issuer = Self.issuerIdentifier(credential["issuer"]),
               Self.isURI(issuer),
               let subjects = Self.credentialSubjects(credential["credentialSubject"]) else {
-            throw EbsiCredentialError.profileMismatch
+            throw EbsiCredentialError.invalidCredentialStructure
         }
 
         let validFrom = try Self.dateTimeProperty("validFrom", in: credential)
         let validUntil = try Self.dateTimeProperty("validUntil", in: credential)
         if let validFrom, let validUntil, validFrom >= validUntil {
-            throw EbsiCredentialError.profileMismatch
+            throw EbsiCredentialError.invalidValidityPeriod
         }
-        if let validationDate {
-            if let validFrom, validationDate < validFrom { throw EbsiCredentialError.profileMismatch }
-            if let validUntil, validationDate >= validUntil { throw EbsiCredentialError.profileMismatch }
-        }
-
         // VC-JOSE registered claims are optional, but when used they must be
         // equivalent to their VCDM properties rather than introducing a second
         // issuer, subject, identifier, or validity period.
         if credential["iss"] != nil, credential["iss"]?.string != issuer {
-            throw EbsiCredentialError.profileMismatch
+            throw EbsiCredentialError.registeredClaimMismatch
         }
         if let subject = credential["sub"] {
             guard let subject = subject.string,
                    subjects.compactMap({ $0["id"]?.string }).contains(subject) else {
-                throw EbsiCredentialError.profileMismatch
+                throw EbsiCredentialError.registeredClaimMismatch
             }
         }
         if let tokenID = credential["jti"] {
             guard let tokenID = tokenID.string, credential["id"]?.string == tokenID else {
-                throw EbsiCredentialError.profileMismatch
+                throw EbsiCredentialError.registeredClaimMismatch
             }
         }
-        try Self.validateNumericDateClaim("nbf", value: credential["nbf"], matches: validFrom)
-        try Self.validateNumericDateClaim("exp", value: credential["exp"], matches: validUntil)
+        try Self.validateNumericDateClaim(
+            "nbf", value: credential["nbf"], matches: validFrom,
+            mismatch: .registeredClaimMismatch
+        )
+        try Self.validateNumericDateClaim(
+            "exp", value: credential["exp"], matches: validUntil,
+            mismatch: .registeredClaimMismatch
+        )
     }
 
     private static func hasRequiredBaseContext(_ value: AnySendableJSON?, expected: String) -> Bool {
@@ -429,12 +432,13 @@ public struct EbsiCredentialInspector: Sendable {
     private static func validateNumericDateClaim(
         _ name: String,
         value: AnySendableJSON?,
-        matches date: Date?
+        matches date: Date?,
+        mismatch: EbsiCredentialError = .profileMismatch
     ) throws {
         guard let value else { return }
         guard let number = value.numericValue, number.isFinite, let date,
               abs(number - date.timeIntervalSince1970) < 0.001 else {
-            throw EbsiCredentialError.profileMismatch
+            throw mismatch
         }
     }
 

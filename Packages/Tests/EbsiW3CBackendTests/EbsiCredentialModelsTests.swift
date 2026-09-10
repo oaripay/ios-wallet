@@ -44,14 +44,18 @@ struct EbsiCredentialModelsTests {
             "type": ["VerifiableCredential"],
             "credentialSubject": ["id": "did:key:holder"],
         ]
-        for payload in [
-            ["vc": base],
-            base.merging(["@context": ["https://www.w3.org/2018/credentials/v1"]]) { _, new in new },
-        ] {
-            let token = try compactJWT(header: ["alg": "ES256", "typ": "vc+jwt"], payload: payload)
-            #expect(throws: EbsiCredentialError.profileMismatch) {
-                _ = try EbsiCredentialInspector().inspectCompactJWT(token, profile: profile)
-            }
+        let nested = try compactJWT(
+            header: ["alg": "ES256", "typ": "vc+jwt"], payload: ["vc": base]
+        )
+        #expect(throws: EbsiCredentialError.profileMismatch) {
+            _ = try EbsiCredentialInspector().inspectCompactJWT(nested, profile: profile)
+        }
+        let wrongContext = try compactJWT(
+            header: ["alg": "ES256", "typ": "vc+jwt"],
+            payload: base.merging(["@context": ["https://www.w3.org/2018/credentials/v1"]]) { _, new in new }
+        )
+        #expect(throws: EbsiCredentialError.dataModelMismatch) {
+            _ = try EbsiCredentialInspector().inspectCompactJWT(wrongContext, profile: profile)
         }
     }
 
@@ -76,8 +80,15 @@ struct EbsiCredentialModelsTests {
         )
         #expect(try EbsiCredentialInspector().inspectCompactJWT(scalarContext, profile: profile)["type"] != nil)
 
+        let wrongContext = try compactJWT(
+            header: ["alg": "ES256", "typ": "vc+jwt"],
+            payload: valid.merging(["@context": ["https://example.org/context", "https://www.w3.org/ns/credentials/v2"]]) { _, new in new }
+        )
+        #expect(throws: EbsiCredentialError.dataModelMismatch) {
+            _ = try EbsiCredentialInspector().inspectCompactJWT(wrongContext, profile: profile)
+        }
+
         let invalidValues: [[String: Any]] = [
-            valid.merging(["@context": ["https://example.org/context", "https://www.w3.org/ns/credentials/v2"]]) { _, new in new },
             valid.merging(["type": ["EmployeeCredential"]]) { _, new in new },
             valid.merging(["issuer": "not a uri"]) { _, new in new },
             valid.merging(["credentialSubject": []]) { _, new in new },
@@ -85,9 +96,37 @@ struct EbsiCredentialModelsTests {
         ]
         for payload in invalidValues {
             let token = try compactJWT(header: ["alg": "ES256", "typ": "vc+jwt"], payload: payload)
-            #expect(throws: EbsiCredentialError.profileMismatch) {
+            #expect(throws: EbsiCredentialError.invalidCredentialStructure) {
                 _ = try EbsiCredentialInspector().inspectCompactJWT(token, profile: profile)
             }
+        }
+    }
+
+    @Test("VCDM2 validation is independent of the JWT representation identifier")
+    func vcdm2JWTVCJSONStructure() throws {
+        let payload: [String: Any] = [
+            "@context": ["https://www.w3.org/ns/credentials/v2"],
+            "type": ["VerifiableCredential", "ExampleCredential"],
+            "issuer": "did:example:issuer",
+            "validFrom": "2026-01-01T00:00:00Z",
+            "validUntil": "2027-01-01T00:00:00Z",
+            "credentialSubject": ["id": "did:example:holder"],
+        ]
+        let credential = try compactJWT(header: ["alg": "ES256"], payload: payload)
+        let profile = try EbsiCredentialProfile.vcdm2JWTVCJSON()
+
+        #expect(try EbsiCredentialInspector().inspectCompactJWT(
+            credential,
+            profile: profile,
+            validationDate: Date(timeIntervalSince1970: 1_780_000_000)
+        )["issuer"]?.string == "did:example:issuer")
+
+        let malformed = try compactJWT(
+            header: ["alg": "ES256"],
+            payload: payload.filter { $0.key != "credentialSubject" }
+        )
+        #expect(throws: EbsiCredentialError.invalidCredentialStructure) {
+            _ = try EbsiCredentialInspector().inspectCompactJWT(malformed, profile: profile)
         }
     }
 
@@ -128,7 +167,7 @@ struct EbsiCredentialModelsTests {
         ] {
             let invalid = payload.merging(mutation) { _, new in new }
             let invalidToken = try compactJWT(header: ["alg": "ES256", "typ": "vc+jwt"], payload: invalid)
-            #expect(throws: EbsiCredentialError.profileMismatch) {
+            #expect(throws: EbsiCredentialError.registeredClaimMismatch) {
                 _ = try EbsiCredentialInspector().inspectCompactJWT(
                     invalidToken,
                     profile: profile,
@@ -141,9 +180,7 @@ struct EbsiCredentialModelsTests {
             try #require(ISO8601DateFormatter().date(from: "2027-01-15T07:58:59Z")),
             try #require(ISO8601DateFormatter().date(from: validUntil)),
         ] {
-            #expect(throws: EbsiCredentialError.profileMismatch) {
-                _ = try EbsiCredentialInspector().inspectCompactJWT(token, profile: profile, validationDate: date)
-            }
+            _ = try EbsiCredentialInspector().inspectCompactJWT(token, profile: profile, validationDate: date)
         }
     }
 
@@ -161,7 +198,7 @@ struct EbsiCredentialModelsTests {
                 "validUntil": timestamp,
             ]
         )
-        #expect(throws: EbsiCredentialError.profileMismatch) {
+        #expect(throws: EbsiCredentialError.invalidValidityPeriod) {
             _ = try EbsiCredentialInspector().inspectCompactJWT(token, profile: .vcdm2JWTVC())
         }
     }
@@ -221,15 +258,13 @@ struct EbsiCredentialModelsTests {
         )
         #expect(result == issuer)
 
-        await #expect(throws: EbsiCredentialError.profileMismatch) {
-            try await validator.validate(
-                rawCredential: Data(token.utf8),
-                profile: .vcdm2JWTVC(),
-                expectedIssuer: issuer,
-                expectedHolderDID: holder,
-                at: validationDate.addingTimeInterval(60)
-            )
-        }
+        _ = try await validator.validate(
+            rawCredential: Data(token.utf8),
+            profile: .vcdm2JWTVC(),
+            expectedIssuer: issuer,
+            expectedHolderDID: holder,
+            at: validationDate.addingTimeInterval(60)
+        )
     }
 
     @Test("Standard SD-JWT VC permits optional cnf while the VCDM profile requires it")

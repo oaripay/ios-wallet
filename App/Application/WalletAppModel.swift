@@ -613,14 +613,14 @@ final class WalletAppModel: ObservableObject {
                         case .reject: throw OpenID4VCBackendError.rejectedTrust
                         }
                         return
-                    } catch {
-                        if case OpenID4VCBackendError.unsupportedGrant = error {
-                            // The offer advertises a non-W3C format; let Wallet Kit claim it.
-                        } else {
-                            // Once the W3C backend recognizes the offer, its errors must not
-                            // be reinterpreted by Wallet Kit under a different profile.
-                            throw error
-                        }
+                    } catch OpenID4VCBackendError.unsupportedRepresentation {
+                        // The offer is valid but advertises no native W3C representation.
+                        // Transfer ownership once, before any credential is retrieved.
+                        let eudiWallet = try await requireEudiWallet()
+                        let offer = try await eudiWallet.resolveIssuanceOffer(uri: scanInput)
+                        selectedIssuanceConfigurationIDs = Set(offer.documents.map(\.configurationID))
+                        eudiFlow = .issuanceReview(offer)
+                        return
                     }
                 }
                 if openID4VCWallet == nil {
@@ -1517,6 +1517,7 @@ final class WalletAppModel: ObservableObject {
             case .malformedOffer: return "The issuer offer is malformed or missing a credential offer payload."
             case .unsafeEndpoint: return "The issuer endpoint is not an allowed HTTPS endpoint."
             case .unsupportedGrant: return "This issuer grant is not supported by the wallet."
+            case .unsupportedRepresentation: return "This credential format is not supported by the native wallet."
             case .invalidTransactionCode: return "The transaction code is invalid for this offer."
             case .untrustedConsentRequired: return "Review the issuer trust warning before continuing."
             case .rejectedTrust: return "The issuer request failed trust or signature validation."
@@ -1584,6 +1585,7 @@ final class WalletAppModel: ObservableObject {
             case .invalidSignature: return "The credential signature is invalid. This cannot be overridden."
             case .invalidHolderBinding: return "The credential is not bound to this wallet. This cannot be overridden."
             case .backendUnavailable: return "The W3C credential backend is unavailable."
+            default: return "Credential validation failed: \(String(describing: error))."
             }
         }
         if let error = error as? DecodingError {
