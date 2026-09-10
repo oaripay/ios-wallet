@@ -5,7 +5,7 @@ import PackageDescription
 let package = Package(
     name: "OariWalletModules",
     platforms: [
-        .iOS(.v17),
+        .iOS("17.4"),
         .macOS(.v14),
     ],
     products: [

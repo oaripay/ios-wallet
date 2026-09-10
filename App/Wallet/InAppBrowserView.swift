@@ -35,9 +35,14 @@ final class WebAuthenticationCoordinator: NSObject, ASWebAuthenticationPresentat
 
         print("Starting web authorization: \(url.absoluteString)")
 
+        let callback = ASWebAuthenticationSession.Callback.https(
+            host: "wallet.ios.oari.io",
+            path: "/oauth/callback"
+        )
+
         let session = ASWebAuthenticationSession(
             url: url,
-            callbackURLScheme: "https"
+            callback: callback
         ) { [weak self] callbackURL, error in
             guard let self else { return }
             print("Web authentication callback URL: \(callbackURL?.absoluteString ?? "nil")")

@@ -5,6 +5,7 @@
 	<key>com.apple.developer.associated-domains</key>
 	<array>
 		<string>applinks:wallet.ios.oari.io</string>
+		<string>webcredentials:wallet.ios.oari.io</string>
 	</array>
 </dict>
 </plist>

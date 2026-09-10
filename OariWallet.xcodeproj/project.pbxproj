@@ -3,7 +3,7 @@
 	archiveVersion = 1;
 	classes = {
 	};
-	objectVersion = 77;
+	objectVersion = 100;
 	objects = {
 
 /* Begin PBXBuildFile section */
@@ -92,7 +92,6 @@
 /* Begin PBXFrameworksBuildPhase section */
 		1D2EB3BDB22C6FBD6C55CD15 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
-			buildActionMask = 2147483647;
 			files = (
 				E6DC58A31B91747DED7422F3 /* WalletDomain in Frameworks */,
 				17720D8DDE4ECE295FC2F85C /* ProtocolEngine in Frameworks */,
@@ -101,7 +100,6 @@
 				11645960D8583608555A7256 /* EudiWalletKitAdapter in Frameworks */,
 				A5BC8036BA15C3E8CCA1991F /* EbsiW3CBackend in Frameworks */,
 			);
-			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXFrameworksBuildPhase section */
 
@@ -246,8 +244,6 @@
 				E54CDE973EDC06B3A9F02B26 /* PBXTargetDependency */,
 			);
 			name = WalletTests;
-			packageProductDependencies = (
-			);
 			productName = WalletTests;
 			productReference = A173F8F1FF8FA4B69FBCBB21 /* WalletTests.xctest */;
 			productType = "com.apple.product-type.bundle.unit-test";
@@ -264,8 +260,6 @@
 				5BE626CCB3FE2CED9BEE557A /* PBXTargetDependency */,
 			);
 			name = WalletUITests;
-			packageProductDependencies = (
-			);
 			productName = WalletUITests;
 			productReference = EE6231651ABE932AFB55827B /* WalletUITests.xctest */;
 			productType = "com.apple.product-type.bundle.ui-testing";
@@ -279,8 +273,6 @@
 				1D2EB3BDB22C6FBD6C55CD15 /* Frameworks */,
 			);
 			buildRules = (
-			);
-			dependencies = (
 			);
 			name = OariWallet;
 			packageProductDependencies = (
@@ -324,7 +316,7 @@
 			packageReferences = (
 				79A848DE71BCD48CDD246E0A /* XCLocalSwiftPackageReference "." */,
 			);
-			preferredProjectObjectVersion = 77;
+			preferredProjectObjectVersion = 100;
 			productRefGroup = CEC098C124B80E784FFC1DAE /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
@@ -339,28 +331,23 @@
 /* Begin PBXResourcesBuildPhase section */
 		5320DEC501B2728089F80E90 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
-			buildActionMask = 2147483647;
 			files = (
 				75557E3BEC43035109485B28 /* AppIcon.icon in Resources */,
 				D71990BF3F9B61F7D4199D6B /* Assets.xcassets in Resources */,
 				56AC9B51A77EB269F7C93EEB /* PrivacyInfo.xcprivacy in Resources */,
 			);
-			runOnlyForDeploymentPostprocessing = 0;
 		};
 		9CA86C63231F5113E112F86E /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
-			buildActionMask = 2147483647;
 			files = (
 				BB5F75258CF99035C9D5D1AA /* TestTrustAnchor.bin in Resources */,
 			);
-			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
 		522626C4DD1208DCF20E35D2 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
-			buildActionMask = 2147483647;
 			files = (
 				1BB8DAD1FBD782E5EF65E35F /* AppConfiguration.swift in Sources */,
 				66D008AA58F216596C073300 /* CameraQRScannerView.swift in Sources */,
@@ -379,25 +366,20 @@
 				5717B6F81D0194A1F51BD588 /* WalletRootView.swift in Sources */,
 				CDFB3AAE87954A256CB95928 /* WalletScreens.swift in Sources */,
 			);
-			runOnlyForDeploymentPostprocessing = 0;
 		};
 		5FC2F28A257113389852E28C /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
-			buildActionMask = 2147483647;
 			files = (
 				19C8E576FC6C967F662642B3 /* EudiReferenceDemoConfigurationTests.swift in Sources */,
 				F690B78E88FEBF4B2B0854DA /* WalletAppModelTests.swift in Sources */,
 				82646659A1496DE955924E7D /* WalletKitIOSIntegrationTests.swift in Sources */,
 			);
-			runOnlyForDeploymentPostprocessing = 0;
 		};
 		FBA0D9BD338B691EB196520B /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
-			buildActionMask = 2147483647;
 			files = (
 				148BA48E5A93CF8A92275BCD /* WalletUITests.swift in Sources */,
 			);
-			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXSourcesBuildPhase section */
 
@@ -415,7 +397,7 @@
 /* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
-		2E9B733EAF735F06F0E51D82 /* ReleaseTesting */ = {
+		2E9B733EAF735F06F0E51D82 /* ReleaseTesting configuration for PBXProject "OariWallet" */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
@@ -463,7 +445,7 @@
 				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.4;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -476,7 +458,7 @@
 			};
 			name = ReleaseTesting;
 		};
-		34BCD017B2E733955942048E /* Debug */ = {
+		34BCD017B2E733955942048E /* Debug configuration for PBXNativeTarget "WalletUITests" */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
@@ -493,7 +475,7 @@
 			};
 			name = Debug;
 		};
-		9557FB24B094A9A68B43228A /* Debug */ = {
+		9557FB24B094A9A68B43228A /* Debug configuration for PBXNativeTarget "OariWallet" */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
@@ -519,7 +501,7 @@
 			};
 			name = Debug;
 		};
-		9AA319BA38F142104EFC5001 /* Debug */ = {
+		9AA319BA38F142104EFC5001 /* Debug configuration for PBXNativeTarget "WalletTests" */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
@@ -536,7 +518,7 @@
 			};
 			name = Debug;
 		};
-		B71E75DE9C096CE1A8E86198 /* Release */ = {
+		B71E75DE9C096CE1A8E86198 /* Release configuration for PBXNativeTarget "WalletUITests" */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
@@ -553,7 +535,7 @@
 			};
 			name = Release;
 		};
-		C248F529E8D830FC51A6DA45 /* Debug */ = {
+		C248F529E8D830FC51A6DA45 /* Debug configuration for PBXProject "OariWallet" */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
@@ -607,7 +589,7 @@
 				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.4;
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				MTL_FAST_MATH = YES;
 				ONLY_ACTIVE_ARCH = YES;
@@ -620,7 +602,7 @@
 			};
 			name = Debug;
 		};
-		CB4FE5FE1891788621323625 /* ReleaseTesting */ = {
+		CB4FE5FE1891788621323625 /* ReleaseTesting configuration for PBXNativeTarget "WalletUITests" */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
@@ -637,7 +619,7 @@
 			};
 			name = ReleaseTesting;
 		};
-		D9B88CADE20591269F4DF4D4 /* Release */ = {
+		D9B88CADE20591269F4DF4D4 /* Release configuration for PBXNativeTarget "WalletTests" */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
@@ -654,7 +636,7 @@
 			};
 			name = Release;
 		};
-		DF41DA95642AD8D1650724C3 /* Release */ = {
+		DF41DA95642AD8D1650724C3 /* Release configuration for PBXNativeTarget "OariWallet" */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
@@ -679,7 +661,7 @@
 			};
 			name = Release;
 		};
-		F73FCE6A2D23E5BAF5807121 /* Release */ = {
+		F73FCE6A2D23E5BAF5807121 /* Release configuration for PBXProject "OariWallet" */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
@@ -727,7 +709,7 @@
 				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.4;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -740,7 +722,7 @@
 			};
 			name = Release;
 		};
-		F8D73E6BAD519980B14698F0 /* ReleaseTesting */ = {
+		F8D73E6BAD519980B14698F0 /* ReleaseTesting configuration for PBXNativeTarget "OariWallet" */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
@@ -766,7 +748,7 @@
 			};
 			name = ReleaseTesting;
 		};
-		FBFBEC9BDB18C051170CCF28 /* ReleaseTesting */ = {
+		FBFBEC9BDB18C051170CCF28 /* ReleaseTesting configuration for PBXNativeTarget "WalletTests" */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
@@ -789,41 +771,37 @@
 		2A3F25E305076C5CFBFE88B1 /* Build configuration list for PBXNativeTarget "WalletUITests" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
-				34BCD017B2E733955942048E /* Debug */,
-				B71E75DE9C096CE1A8E86198 /* Release */,
-				CB4FE5FE1891788621323625 /* ReleaseTesting */,
+				34BCD017B2E733955942048E /* Debug configuration for PBXNativeTarget "WalletUITests" */,
+				B71E75DE9C096CE1A8E86198 /* Release configuration for PBXNativeTarget "WalletUITests" */,
+				CB4FE5FE1891788621323625 /* ReleaseTesting configuration for PBXNativeTarget "WalletUITests" */,
 			);
-			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Debug;
 		};
 		54AA8F91B7CFB96C51079D7F /* Build configuration list for PBXProject "OariWallet" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
-				C248F529E8D830FC51A6DA45 /* Debug */,
-				F73FCE6A2D23E5BAF5807121 /* Release */,
-				2E9B733EAF735F06F0E51D82 /* ReleaseTesting */,
+				C248F529E8D830FC51A6DA45 /* Debug configuration for PBXProject "OariWallet" */,
+				F73FCE6A2D23E5BAF5807121 /* Release configuration for PBXProject "OariWallet" */,
+				2E9B733EAF735F06F0E51D82 /* ReleaseTesting configuration for PBXProject "OariWallet" */,
 			);
-			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Debug;
 		};
 		78BE9CE1C46B4B137D78C1BB /* Build configuration list for PBXNativeTarget "WalletTests" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
-				9AA319BA38F142104EFC5001 /* Debug */,
-				D9B88CADE20591269F4DF4D4 /* Release */,
-				FBFBEC9BDB18C051170CCF28 /* ReleaseTesting */,
+				9AA319BA38F142104EFC5001 /* Debug configuration for PBXNativeTarget "WalletTests" */,
+				D9B88CADE20591269F4DF4D4 /* Release configuration for PBXNativeTarget "WalletTests" */,
+				FBFBEC9BDB18C051170CCF28 /* ReleaseTesting configuration for PBXNativeTarget "WalletTests" */,
 			);
-			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Debug;
 		};
 		CFE6AA65F6A86E4BE43CED47 /* Build configuration list for PBXNativeTarget "OariWallet" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
-				9557FB24B094A9A68B43228A /* Debug */,
-				DF41DA95642AD8D1650724C3 /* Release */,
-				F8D73E6BAD519980B14698F0 /* ReleaseTesting */,
+				9557FB24B094A9A68B43228A /* Debug configuration for PBXNativeTarget "OariWallet" */,
+				DF41DA95642AD8D1650724C3 /* Release configuration for PBXNativeTarget "OariWallet" */,
+				F8D73E6BAD519980B14698F0 /* ReleaseTesting configuration for PBXNativeTarget "OariWallet" */,
 			);
-			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Debug;
 		};
 /* End XCConfigurationList section */

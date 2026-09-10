@@ -10,7 +10,7 @@ eIDAS legal recognition, or production readiness.
 ## Requirements
 
 - macOS with Xcode 26 or a compatible toolchain supporting Swift 6.2 packages.
-- iOS 17 or later.
+- iOS 17.4 or later.
 - XcodeGen when regenerating the Xcode project.
 - A physical iPhone for camera scanning and device-specific secure-key behavior.
 
