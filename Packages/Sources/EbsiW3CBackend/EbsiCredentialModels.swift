@@ -313,9 +313,7 @@ public struct EbsiCredentialInspector: Sendable {
         context expectedContext: String,
         at validationDate: Date?
     ) throws {
-        guard case let .array(contexts)? = credential["@context"],
-              contexts.first?.string == expectedContext,
-              contexts.allSatisfy({ $0.string != nil || $0.object != nil }),
+        guard hasRequiredBaseContext(credential["@context"], expected: expectedContext),
               Self.hasVCDM2Type(credential["type"]),
               let issuer = Self.issuerIdentifier(credential["issuer"]),
               Self.isURI(issuer),
@@ -325,7 +323,7 @@ public struct EbsiCredentialInspector: Sendable {
 
         let validFrom = try Self.dateTimeProperty("validFrom", in: credential)
         let validUntil = try Self.dateTimeProperty("validUntil", in: credential)
-        if let validFrom, let validUntil, validFrom > validUntil {
+        if let validFrom, let validUntil, validFrom >= validUntil {
             throw EbsiCredentialError.profileMismatch
         }
         if let validationDate {
@@ -352,6 +350,18 @@ public struct EbsiCredentialInspector: Sendable {
         }
         try Self.validateNumericDateClaim("nbf", value: credential["nbf"], matches: validFrom)
         try Self.validateNumericDateClaim("exp", value: credential["exp"], matches: validUntil)
+    }
+
+    private static func hasRequiredBaseContext(_ value: AnySendableJSON?, expected: String) -> Bool {
+        switch value {
+        case let .string(context):
+            context == expected
+        case let .array(contexts):
+            contexts.first?.string == expected &&
+                contexts.allSatisfy { $0.string != nil || $0.object != nil }
+        default:
+            false
+        }
     }
 
     private static func hasVCDM2Type(_ value: AnySendableJSON?) -> Bool {

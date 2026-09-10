@@ -77,6 +77,7 @@ final class WalletAppModel: ObservableObject {
     private var activeAuthenticationID: UUID?
     private var deferredSchedulerTask: Task<Void, Never>?
     private var webAuthorizationPollingTask: Task<Void, Never>?
+    private var activeWebAuthorizationID: UUID?
     private let webAuthenticationCoordinator = WebAuthenticationCoordinator()
     private(set) var autoReviewTask: Task<Void, Never>?
     private let userDefaults: UserDefaults
@@ -601,7 +602,6 @@ final class WalletAppModel: ObservableObject {
                     eudiFlow = .issuanceReview(offer)
                     return
                 }
-                var w3cRoutingError: Error?
                 if let openID4VCWallet {
                     do {
                         let interaction = try await openID4VCWallet.resolveInteraction(uri: scanInput)
@@ -617,22 +617,11 @@ final class WalletAppModel: ObservableObject {
                         if case OpenID4VCBackendError.unsupportedGrant = error {
                             // The offer advertises a non-W3C format; let Wallet Kit claim it.
                         } else {
-                            w3cRoutingError = error
+                            // Once the W3C backend recognizes the offer, its errors must not
+                            // be reinterpreted by Wallet Kit under a different profile.
+                            throw error
                         }
                     }
-                }
-                if let w3cRoutingError {
-                    guard let eudiWallet, isEudiOperational else {
-                        throw w3cRoutingError
-                    }
-                    do {
-                        let offer = try await eudiWallet.resolveIssuanceOffer(uri: scanInput)
-                        selectedIssuanceConfigurationIDs = Set(offer.documents.map(\.configurationID))
-                        eudiFlow = .issuanceReview(offer)
-                    } catch {
-                        throw w3cRoutingError
-                    }
-                    return
                 }
                 if openID4VCWallet == nil {
                     guard let eudiWallet, isEudiOperational else {
@@ -800,12 +789,26 @@ final class WalletAppModel: ObservableObject {
         }
     }
 
-    private func finishWebAuthorization(code: String) async {
-        print("Completing web authorization with code")
-        webAuthorizationURL = nil
+    private func claimWebAuthorization(id: UUID) -> Bool {
+        guard activeOpenID4VCInteractionID == id, activeWebAuthorizationID == id else { return false }
+        activeWebAuthorizationID = nil
+        webAuthenticationCoordinator.cancel()
+        webAuthorizationPollingTask?.cancel()
         webAuthorizationPollingTask = nil
+        webAuthorizationURL = nil
+        return true
+    }
+
+    private func failWebAuthorization(id: UUID, message: String) {
+        guard claimWebAuthorization(id: id) else { return }
+        eudiFlow = .failed(message)
+    }
+
+    private func finishWebAuthorization(id: UUID, code: String) async {
+        guard claimWebAuthorization(id: id) else { return }
+        print("Completing web authorization with code")
         do {
-            guard let id = activeOpenID4VCInteractionID, let openID4VCWallet else { throw CancellationError() }
+            guard let openID4VCWallet else { throw CancellationError() }
             let result = try await openID4VCWallet.completeAuthorization(id: id, code: code)
             try await refreshWalletState()
             await handleOpenID4VCCompletion(result)
@@ -815,10 +818,10 @@ final class WalletAppModel: ObservableObject {
         }
     }
 
-    private func continueWebAuthorization(authSession: String) async {
-        webAuthorizationURL = nil
+    private func continueWebAuthorization(id: UUID, authSession: String) async {
+        guard claimWebAuthorization(id: id) else { return }
         do {
-            guard let id = activeOpenID4VCInteractionID, let openID4VCWallet else { throw CancellationError() }
+            guard let openID4VCWallet else { throw CancellationError() }
             let result = try await openID4VCWallet.continueWebAuthorization(id: id, authSession: authSession)
             await handleOpenID4VCCompletion(result)
         } catch { eudiFlow = .failed(Self.safeMessage(error)) }
@@ -829,6 +832,7 @@ final class WalletAppModel: ObservableObject {
         webAuthenticationCoordinator.cancel()
         webAuthorizationPollingTask?.cancel()
         webAuthorizationPollingTask = nil
+        activeWebAuthorizationID = nil
         webAuthorizationURL = nil
         activeOpenID4VCInteractionID = nil
         activeOpenID4VCInteraction = nil
@@ -852,14 +856,17 @@ final class WalletAppModel: ObservableObject {
             activeOpenID4VPPresentationRequest = challenge
             eudiFlow = .openID4VPPresentationRequired(challenge)
         case let .webAuthorizationRequired(challenge):
+            webAuthenticationCoordinator.cancel()
+            webAuthorizationPollingTask?.cancel()
+            webAuthorizationPollingTask = nil
+            activeWebAuthorizationID = challenge.id
             webAuthorizationURL = challenge.authorizationURL
             eudiFlow = .working("Waiting for issuer authentication…")
             webAuthenticationCoordinator.start(
                 url: challenge.authorizationURL,
-                onCompletion: { [weak self] url in self?.completeWebAuthorization(url) },
+                onCompletion: { [weak self] url in self?.completeWebAuthorization(url, id: challenge.id) },
                 onFailure: { [weak self] message in
-                    self?.webAuthorizationURL = nil
-                    self?.eudiFlow = .failed(message)
+                    self?.failWebAuthorization(id: challenge.id, message: message)
                 }
             )
             if challenge.authSession != nil { startWebAuthorizationPolling(id: challenge.id) }
@@ -871,9 +878,17 @@ final class WalletAppModel: ObservableObject {
     }
 
     func completeWebAuthorization(_ url: URL) {
+        guard let id = activeWebAuthorizationID else {
+            print("Ignoring authorization callback: no active web authorization")
+            return
+        }
+        completeWebAuthorization(url, id: id)
+    }
+
+    private func completeWebAuthorization(_ url: URL, id: UUID) {
         print("completeWebAuthorization received: \(url.absoluteString)")
-        guard activeOpenID4VCInteractionID != nil else {
-            print("Ignoring authorization callback: no active interaction")
+        guard activeOpenID4VCInteractionID == id, activeWebAuthorizationID == id else {
+            print("Ignoring authorization callback: stale interaction")
             return
         }
         guard Self.matchesAuthorizationRedirect(url) else {
@@ -884,29 +899,26 @@ final class WalletAppModel: ObservableObject {
             print("Ignoring authorization callback: malformed URL")
             return
         }
-        webAuthorizationURL = nil
-        webAuthorizationPollingTask?.cancel()
-        webAuthorizationPollingTask = nil
         let codes = components.queryItems?.filter { $0.name == "code" }.compactMap(\.value) ?? []
         let sessions = components.queryItems?.filter { $0.name == "auth_session" }.compactMap(\.value) ?? []
         if codes.count == 1, sessions.isEmpty, !codes[0].isEmpty {
             let code = codes[0]
-            Task { await finishWebAuthorization(code: code) }
+            Task { await finishWebAuthorization(id: id, code: code) }
             return
         }
         if sessions.count == 1, codes.isEmpty, !sessions[0].isEmpty {
             let authSession = sessions[0]
-            Task { await continueWebAuthorization(authSession: authSession) }
+            Task { await continueWebAuthorization(id: id, authSession: authSession) }
             return
         }
         let error = components.queryItems?.first(where: { $0.name == "error_description" })?.value
             ?? components.queryItems?.first(where: { $0.name == "error" })?.value
             ?? "Authorization failed"
+        guard claimWebAuthorization(id: id) else { return }
         eudiFlow = .failed("Issuer authentication failed: \(error)")
-        let id = activeOpenID4VCInteractionID
         activeOpenID4VCInteractionID = nil
         activeOpenID4VCInteraction = nil
-        if let id, let openID4VCWallet {
+        if let openID4VCWallet {
             Task { await openID4VCWallet.cancelInteraction(id: id) }
         }
     }
@@ -954,26 +966,23 @@ final class WalletAppModel: ObservableObject {
                         try await Task.sleep(for: .seconds(2))
                         continue
                     case let .authorizationCode(code):
-                        await self?.finishWebAuthorization(code: code)
+                        await self?.finishWebAuthorization(id: id, code: code)
                         return
                     case let .failed(error):
-                        self?.webAuthorizationURL = nil
-                        self?.eudiFlow = .failed("Issuer authentication failed: \(error)")
-                        self?.webAuthorizationPollingTask = nil
+                        self?.failWebAuthorization(id: id, message: "Issuer authentication failed: \(error)")
                         return
                     }
                 }
                 if !Task.isCancelled {
-                    self?.webAuthorizationURL = nil
-                    self?.eudiFlow = .failed("Issuer authentication timed out. Start the credential offer again.")
-                    self?.webAuthorizationPollingTask = nil
+                    self?.failWebAuthorization(
+                        id: id,
+                        message: "Issuer authentication timed out. Start the credential offer again."
+                    )
                 }
             } catch is CancellationError {
                 return
             } catch {
-                self?.webAuthorizationURL = nil
-                self?.eudiFlow = .failed(Self.safeMessage(error))
-                self?.webAuthorizationPollingTask = nil
+                self?.failWebAuthorization(id: id, message: Self.safeMessage(error))
             }
         }
     }
@@ -1238,8 +1247,10 @@ final class WalletAppModel: ObservableObject {
     }
 
     private func finishCredentialRedemption() {
+        webAuthenticationCoordinator.cancel()
         webAuthorizationPollingTask?.cancel()
         webAuthorizationPollingTask = nil
+        activeWebAuthorizationID = nil
         webAuthorizationURL = nil
         pendingExternalURL = nil
         scanInput = ""

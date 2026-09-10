@@ -54,7 +54,7 @@ separate because they have different protocol and lifecycle responsibilities.
   - Issuers: `issuer.eudiw.dev` and `issuer-backend.eudiw.dev`.
   - Verifier: `verifier.eudiw.dev`.
   - Wallet Provider: `wallet-provider.eudiw.dev`.
-  - Wallet Kit `0.39.1`, OpenID4VCI `0.53.0`, and OpenID4VP `0.41.0`.
+  - Wallet Kit `0.51.0`, OpenID4VCI `0.53.2`, and OpenID4VP `0.41.0`.
    - Online ETSI reference trust lists with warning-mode ecosystem trust.
 - HAIP and EUDI scheme routing:
   - `haip-vci`
@@ -117,12 +117,57 @@ EUDI Wallet Kit initializes lazily after the root UI is available. Dedicated
 EUDI and HAIP requests wait for the same initializer behind a generic Oari
 loading overlay. Native W3C requests remain available during this initialization.
 
-Supported launch arguments:
+## Associated domains and AASA
+
+The production app uses an `https://example.com/oauth/callback` (in this case
+`wallet.ios.oari.io`) as the W3C authorization redirect handled by
+`ASWebAuthenticationSession`. A signed app must include these
+associated-domain entitlements:
 
 ```text
---fixture production|empty|populated|storage-failure
---incoming-url <wallet-url>
---disable-animations
+applinks:example.com
+webcredentials:example.com
+```
+
+The server must publish an Apple App Site Association file at exactly:
+
+```text
+https://example.com/.well-known/apple-app-site-association
+```
+
+Use the Apple Team ID from the deployment's Apple Developer account or signed
+provisioning profile. Do not commit or publish a production Team ID in examples,
+fixtures, logs, or documentation. The AASA application identifier is the Team ID
+and bundle identifier joined with a period:
+
+```text
+<APPLE_TEAM_ID>.<APP_BUNDLE_ID>
+```
+
+The deployed file requires this structure:
+
+```json
+{
+  "applinks": {
+    "details": [
+      {
+        "appIDs": [
+          "<APPLE_TEAM_ID>.<APP_BUNDLE_ID>"
+        ],
+        "components": [
+          {
+            "/": "/oauth/callback"
+          }
+        ]
+      }
+    ]
+  },
+  "webcredentials": {
+    "apps": [
+      "<APPLE_TEAM_ID>.<APP_BUNDLE_ID>"
+    ]
+  }
+}
 ```
 
 ## QR scanner

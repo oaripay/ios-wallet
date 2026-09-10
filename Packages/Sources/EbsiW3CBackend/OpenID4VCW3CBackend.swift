@@ -3062,34 +3062,32 @@ public actor OpenID4VCW3CBackend {
             return profile
         }
         let context = Self.jwtContext(rawCredential)
-        if format == "jwt_vc_json" {
+        if format == nil || format == "jwt_vc_json" || format == "application/vc+jwt" {
+            let candidates = profiles.filter {
+                switch format {
+                case "jwt_vc_json":
+                    $0.representation == .jwtVcJson || $0.representation == .vcdm2Jwt
+                case "application/vc+jwt":
+                    $0.representation == .vcdm2Jwt
+                default:
+                    $0.representation == .jwtVcJson || $0.representation == .jwtVcJsonLd ||
+                        $0.representation == .vcdm2Jwt
+                }
+            }
             if context == "https://www.w3.org/ns/credentials/v2",
-               let profile = profiles.first(where: {
-                    ($0.representation == .jwtVcJson || $0.representation == .vcdm2Jwt)
-                        && $0.dataModel == .v2_0
-                }) {
+               let profile = candidates.first(where: { $0.dataModel == .v2_0 }) {
                 return profile
             }
             if context == "https://www.w3.org/2018/credentials/v1",
-               let profile = profiles.first(where: { $0.dataModel == .v1_1 }) {
+               let profile = candidates.first(where: { $0.dataModel == .v1_1 }) {
                 return profile
             }
-
-            // jwt_vc_json is a representation label, not a complete VCDM
-            // version indicator. Keep accepting legacy JWT VCs whose issuer
-            // metadata does not expose the v1.1 context explicitly.
-            if let profile = profiles.first(where: { $0.dataModel == .v1_1 }) {
+            if context == nil, candidates.count == 1, let profile = candidates.first {
                 return profile
             }
+            throw EbsiCredentialError.profileMismatch
         }
-        if format == "application/vc+jwt",
-           let profile = profiles.first(where: { $0.representation == .vcdm2Jwt }) {
-            return profile
-        }
-        guard let profile = profiles.first(where: { $0.representation == .vcdm2Jwt }) else {
-            throw EbsiCredentialError.unsupportedRepresentation
-        }
-        return profile
+        throw EbsiCredentialError.unsupportedRepresentation
     }
 
     private static func jwtContext(_ raw: Data) -> String? {
@@ -3399,7 +3397,7 @@ public actor OpenID4VCW3CBackend {
     ) -> Bool {
         switch requestedFormat {
         case "dc+sd-jwt":
-            return representation == .dcSdJwt || representation == .vcdm2SdJwt
+            return representation == .dcSdJwt
         case "jwt_vc_json":
             return representation == .jwtVcJson || representation == .vcdm2Jwt
         case "application/vc+jwt":
@@ -3415,7 +3413,7 @@ public actor OpenID4VCW3CBackend {
         _ actual: String,
         accepted: Set<String>
     ) -> Bool {
-        accepted.contains { actual == $0 || actual.hasPrefix($0) }
+        accepted.contains(actual)
     }
 
     private static func parseStoredSDJWT(_ rawCredential: Data) throws -> (

@@ -29,7 +29,8 @@ enum EudiReferenceDemoConfiguration {
             defaultPolicy: .warning,
             requireSignedMetadata: true,
             statusTrustPolicy: .warning,
-            wrprcTrustPolicy: .warning
+            wrprcVpTrustPolicy: .warning,
+            wrprcVciTrustPolicy: .warning
         )
         let nativeProvider = EudiWalletAttestationsProviderAdapter(provider: attestationProvider)
         let keyAttestationConfiguration = KeyAttestationConfiguration(
@@ -37,7 +38,7 @@ enum EudiReferenceDemoConfiguration {
             popKeyOptions: KeyOptions(
                 curve: .P256,
                 secureAreaName: SecureEnclaveSecureArea.name,
-                accessControl: []
+                accessControl: .empty
             )
         )
         func issuer(_ url: String) -> OpenId4VciConfiguration {

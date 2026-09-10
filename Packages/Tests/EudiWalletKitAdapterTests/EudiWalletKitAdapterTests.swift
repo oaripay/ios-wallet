@@ -155,8 +155,8 @@ struct EudiWalletKitAdapterTests {
 
     @Test("Selected Wallet Kit revision is immutable and explicit")
     func selectedRevision() {
-        #expect(EudiWalletKitBaseline.selectedVersion == "0.39.1")
-        #expect(EudiWalletKitBaseline.selectedCommit == "79005ab4bf0399238c1c9ebff9ee7d8a42c521f9")
+        #expect(EudiWalletKitBaseline.selectedVersion == "0.51.0")
+        #expect(EudiWalletKitBaseline.selectedCommit == "ca8802124a06e65f49903e8ebf35a427cc345fa5")
     }
 
     @Test("Wallet configuration disables SDK file logging and requires authentication")
@@ -512,7 +512,8 @@ struct EudiWalletKitAdapterTests {
             defaultPolicy: .warning,
             requireSignedMetadata: true,
             statusTrustPolicy: .warning,
-            wrprcTrustPolicy: .warning
+            wrprcVpTrustPolicy: .warning,
+            wrprcVciTrustPolicy: .warning
         )
         #else
         let trustConfiguration = TrustConfiguration(
@@ -520,7 +521,8 @@ struct EudiWalletKitAdapterTests {
             defaultPolicy: .warning,
             requireSignedMetadata: true,
             statusTrustPolicy: .warning,
-            wrprcTrustPolicy: .warning
+            wrprcVpTrustPolicy: .warning,
+            wrprcVciTrustPolicy: .warning
         )
         #endif
         return try EudiWalletKitBaseline(

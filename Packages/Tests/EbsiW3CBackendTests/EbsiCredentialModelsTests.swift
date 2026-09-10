@@ -70,6 +70,12 @@ struct EbsiCredentialModelsTests {
         )
         #expect(try EbsiCredentialInspector().inspectCompactJWT(accepted, profile: profile)["type"] != nil)
 
+        let scalarContext = try compactJWT(
+            header: ["alg": "ES256", "typ": "vc+jwt"],
+            payload: valid.merging(["@context": "https://www.w3.org/ns/credentials/v2"]) { _, new in new }
+        )
+        #expect(try EbsiCredentialInspector().inspectCompactJWT(scalarContext, profile: profile)["type"] != nil)
+
         let invalidValues: [[String: Any]] = [
             valid.merging(["@context": ["https://example.org/context", "https://www.w3.org/ns/credentials/v2"]]) { _, new in new },
             valid.merging(["type": ["EmployeeCredential"]]) { _, new in new },
@@ -141,7 +147,7 @@ struct EbsiCredentialModelsTests {
         }
     }
 
-    @Test("VCDM2 permits equal validity bounds")
+    @Test("VCDM2 rejects equal validity bounds")
     func vcdm2EqualValidityBounds() throws {
         let timestamp = "2027-01-15T08:00:00Z"
         let token = try compactJWT(
@@ -155,7 +161,9 @@ struct EbsiCredentialModelsTests {
                 "validUntil": timestamp,
             ]
         )
-        _ = try EbsiCredentialInspector().inspectCompactJWT(token, profile: .vcdm2JWTVC())
+        #expect(throws: EbsiCredentialError.profileMismatch) {
+            _ = try EbsiCredentialInspector().inspectCompactJWT(token, profile: .vcdm2JWTVC())
+        }
     }
 
     @Test("VCDM2 requires vc+jwt typ while VCDM 1.1 keeps nested legacy behavior")

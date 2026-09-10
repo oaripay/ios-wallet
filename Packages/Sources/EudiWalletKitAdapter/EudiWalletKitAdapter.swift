@@ -12,8 +12,8 @@ import MdocSecurity18013
 #endif
 
 public struct EudiWalletKitBaseline: Sendable {
-    public static let selectedVersion = "0.39.1"
-    public static let selectedCommit = "79005ab4bf0399238c1c9ebff9ee7d8a42c521f9"
+    public static let selectedVersion = "0.51.0"
+    public static let selectedCommit = "ca8802124a06e65f49903e8ebf35a427cc345fa5"
 
     public let serviceName: String
     public let trustConfiguration: TrustConfiguration

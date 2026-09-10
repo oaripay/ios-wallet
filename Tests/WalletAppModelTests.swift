@@ -430,6 +430,48 @@ struct WalletAppModelTests {
         }
     }
 
+    @Test("W3C validation errors do not fall through to Wallet Kit")
+    func w3cErrorsRetainBackendOwnership() async {
+        let eudi = FixtureEudiWallet()
+        let w3c = FixtureOpenID4VCWallet(
+            outcome: .allow,
+            resolveError: .invalidResponse
+        )
+        let model = WalletAppModel()
+        await model.load(.success(WalletAppDependencies(
+            credentials: EmptyMetadataRepository(), audit: EmptyAuditRepository(),
+            localAuthenticator: FixtureAuthenticator(), eudiWallet: eudi,
+            eudiAvailability: .available, openID4VCWallet: w3c
+        )))
+
+        model.scanInput = "openid-credential-offer://?credential_offer=fixture"
+        await model.reviewScannedRequest()
+
+        #expect(await w3c.resolveCount == 1)
+        #expect(await eudi.lastIssuanceOfferURI == nil)
+    }
+
+    @Test("Unsupported W3C offers transfer ownership to Wallet Kit")
+    func unsupportedW3COfferFallsBackToEudi() async {
+        let eudi = FixtureEudiWallet()
+        let w3c = FixtureOpenID4VCWallet(
+            outcome: .allow,
+            resolveError: .unsupportedGrant
+        )
+        let model = WalletAppModel()
+        await model.load(.success(WalletAppDependencies(
+            credentials: EmptyMetadataRepository(), audit: EmptyAuditRepository(),
+            localAuthenticator: FixtureAuthenticator(), eudiWallet: eudi,
+            eudiAvailability: .available, openID4VCWallet: w3c
+        )))
+
+        model.scanInput = "openid-credential-offer://?credential_offer=fixture"
+        await model.reviewScannedRequest()
+
+        #expect(await w3c.resolveCount == 1)
+        #expect(await eudi.lastIssuanceOfferURI == model.scanInput)
+    }
+
     @Test("HAIP waits for one in-progress EUDI initialization without blocking app load")
     func haipWaitsForEudiInitialization() async throws {
         let eudi = FixtureEudiWallet()
@@ -1121,6 +1163,61 @@ struct WalletAppModelTests {
         }
     }
 
+    @Test("Polling completion closes web authorization and ignores a later redirect")
+    func webAuthorizationPollingHasSingleCompletion() async {
+        await confirmation("Authorization completed once", expectedCount: 1) { completed in
+            let interactionID = UUID()
+            let presentation = OpenID4VPPresentationRequest(
+                id: interactionID,
+                authorizationChallengeEndpoint: URL(string: "https://issuer.example/authorize-challenge")!,
+                authSession: "vp-session",
+                interactionType: "urn:openid:dcp:ia:openid4vp_presentation",
+                responseMode: "ia_post",
+                responseURI: URL(string: "https://issuer.example/authorize-challenge")!,
+                nonce: "nonce",
+                state: "state",
+                dcqlQuery: ["credentials": .array([.object([
+                    "id": .string("pid"),
+                    "format": .string("dc+sd-jwt"),
+                ])])],
+                signedRequest: nil
+            )
+            let web = WebAuthorizationChallenge(
+                id: interactionID,
+                authSession: "web-session",
+                authorizationURL: URL(string: "https://login.example/session")!,
+                authorizationChallengeEndpoint: URL(string: "https://issuer.example/authorize-challenge")!
+            )
+            let openID4VC = FixtureOpenID4VCWallet(
+                outcome: .allow,
+                interactionID: interactionID,
+                continuation: .presentationRequired(presentation),
+                pidPresentationRequest: fixturePresentationRequest(),
+                pidCompletion: .webAuthorizationRequired(web),
+                webAuthorizationPollResult: .authorizationCode("poll-code"),
+                onAuthorizationComplete: { completed() }
+            )
+            let model = WalletAppModel()
+            await model.load(.success(WalletAppDependencies(
+                credentials: EmptyMetadataRepository(), audit: EmptyAuditRepository(),
+                localAuthenticator: FixtureAuthenticator(), eudiWallet: FixtureEudiWallet(),
+                eudiAvailability: .available, openID4VCWallet: openID4VC
+            )))
+            model.scanInput = "openid-credential-offer://?credential_offer=fixture"
+            await model.reviewScannedRequest()
+            await model.issueReviewedOpenID4VCCredential()
+            await model.startEudiCredentialPresentation(presentation)
+            await model.submitPresentation(accepted: true)
+            await openID4VC.waitForAuthorizationCompletion()
+
+            model.completeWebAuthorization(URL(string: "https://wallet.ios.oari.io/oauth/callback?code=redirect-code")!)
+            await Task.yield()
+
+            #expect(model.webAuthorizationURL == nil)
+            #expect(await openID4VC.completedAuthorizationCodes == ["poll-code"])
+        }
+    }
+
     @Test("Deferred credential retry forwards issuer and document and reports outcome")
     func deferredCredentialRetry() async {
         let record = CredentialRecord(
@@ -1201,7 +1298,10 @@ private actor FixtureOpenID4VCWallet: OpenID4VCOperating {
     let continuationDelayNanoseconds: UInt64
     let continuation: OpenID4VCInteractionCompletion
     let pidCompletion: OpenID4VCInteractionCompletion
+    let webAuthorizationPollResult: WebAuthorizationPollResult
     let onWebAuthorizationPoll: (@Sendable () -> Void)?
+    let onAuthorizationComplete: (@Sendable () -> Void)?
+    let resolveError: OpenID4VCBackendError?
     private(set) var completedAuthorizationCodes: [String] = []
     private(set) var completedPIDClaimIDs: [Set<String>] = []
     private(set) var completedStandaloneClaimIDs: [Set<String>] = []
@@ -1212,6 +1312,7 @@ private actor FixtureOpenID4VCWallet: OpenID4VCOperating {
     private(set) var deferredCheckCount = 0
     private var didPollWebAuthorization = false
     private var webAuthorizationPollWaiters: [CheckedContinuation<Void, Never>] = []
+    private var authorizationCompletionWaiters: [CheckedContinuation<Void, Never>] = []
     private var deferred: [DeferredIssuance]
     let pidPresentationRequest: EudiPresentationRequest?
     let standalonePresentationRequest: EudiPresentationRequest?
@@ -1224,7 +1325,10 @@ private actor FixtureOpenID4VCWallet: OpenID4VCOperating {
         standalonePresentationRequest: EudiPresentationRequest? = nil,
         deferred: [DeferredIssuance] = [],
         pidCompletion: OpenID4VCInteractionCompletion = .completed("W3C PID submitted"),
-        onWebAuthorizationPoll: (@Sendable () -> Void)? = nil
+        webAuthorizationPollResult: WebAuthorizationPollResult = .pending,
+        onWebAuthorizationPoll: (@Sendable () -> Void)? = nil,
+        onAuthorizationComplete: (@Sendable () -> Void)? = nil,
+        resolveError: OpenID4VCBackendError? = nil
     ) {
         self.outcome = outcome
         self.interactionID = interactionID
@@ -1234,10 +1338,14 @@ private actor FixtureOpenID4VCWallet: OpenID4VCOperating {
         self.standalonePresentationRequest = standalonePresentationRequest
         self.deferred = deferred
         self.pidCompletion = pidCompletion
+        self.webAuthorizationPollResult = webAuthorizationPollResult
         self.onWebAuthorizationPoll = onWebAuthorizationPoll
+        self.onAuthorizationComplete = onAuthorizationComplete
+        self.resolveError = resolveError
     }
     func resolveInteraction(uri: String) async throws -> OpenID4VCResolvedInteraction {
         resolveCount += 1
+        if let resolveError { throw resolveError }
         return OpenID4VCResolvedInteraction(
             id: interactionID, kind: .issuance,
             counterpartyIdentifier: "did:ebsi:unregistered-issuer",
@@ -1303,6 +1411,10 @@ private actor FixtureOpenID4VCWallet: OpenID4VCOperating {
     }
     func completeAuthorization(id: UUID, code: String) async throws -> OpenID4VCInteractionCompletion {
         completedAuthorizationCodes.append(code)
+        let waiters = authorizationCompletionWaiters
+        authorizationCompletionWaiters.removeAll()
+        waiters.forEach { $0.resume() }
+        onAuthorizationComplete?()
         return .completed("Authorization completed")
     }
     func continueWebAuthorization(
@@ -1317,12 +1429,18 @@ private actor FixtureOpenID4VCWallet: OpenID4VCOperating {
         webAuthorizationPollWaiters.removeAll()
         waiters.forEach { $0.resume() }
         onWebAuthorizationPoll?()
-        return .pending
+        return webAuthorizationPollResult
     }
     func waitForWebAuthorizationPoll() async {
         if didPollWebAuthorization { return }
         await withCheckedContinuation { continuation in
             webAuthorizationPollWaiters.append(continuation)
+        }
+    }
+    func waitForAuthorizationCompletion() async {
+        if !completedAuthorizationCodes.isEmpty { return }
+        await withCheckedContinuation { continuation in
+            authorizationCompletionWaiters.append(continuation)
         }
     }
     func deleteCredential(

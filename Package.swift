@@ -23,11 +23,11 @@ let package = Package(
     dependencies: [
         .package(
             url: "https://github.com/eu-digital-identity-wallet/eudi-lib-ios-wallet-kit.git",
-            exact: "0.39.1"
+            exact: "0.51.0"
         ),
         .package(
             url: "https://github.com/eu-digital-identity-wallet/eudi-lib-ios-iso18013-security.git",
-            exact: "0.24.2"
+            exact: "0.25.0"
         ),
         .package(
             url: "https://github.com/apple/swift-certificates.git",
@@ -35,7 +35,7 @@ let package = Package(
         ),
         .package(
             url: "https://github.com/eu-digital-identity-wallet/eudi-lib-ios-openid4vci-swift.git",
-            exact: "0.53.0"
+            exact: "0.53.2"
         ),
         .package(
             url: "https://github.com/airsidemobile/JOSESwift.git",

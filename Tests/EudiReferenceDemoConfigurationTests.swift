@@ -29,7 +29,8 @@ struct EudiReferenceDemoConfigurationTests {
         #expect(baseline.trustConfiguration.defaultPolicy == .warning)
         #expect(baseline.trustConfiguration.requireSignedMetadata)
         #expect(baseline.trustConfiguration.statusTrustPolicy == .warning)
-        #expect(baseline.trustConfiguration.wrprcTrustPolicy == .warning)
+        #expect(baseline.trustConfiguration.wrprcVpTrustPolicy == .warning)
+        #expect(baseline.trustConfiguration.wrprcVciTrustPolicy == .warning)
 
         for (host, issuer) in baseline.openID4VciConfigurations {
             #expect(issuer.credentialIssuerURL == "https://\(host)")
