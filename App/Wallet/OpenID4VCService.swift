@@ -1,6 +1,8 @@
 import EbsiW3CBackend
 import EudiWalletKitAdapter
+import CryptoKit
 import Foundation
+import IdentityDomain
 import WalletDomain
 import WalletVault
 
@@ -40,6 +42,7 @@ enum W3CCredentialRefreshCompletion: Equatable, Sendable {
 }
 
 protocol OpenID4VCOperating: Sendable {
+    func installBundledCredentialIfNeeded() async throws
     func backfillCredentialValidity() async
     func resolveInteraction(uri: String) async throws -> OpenID4VCResolvedInteraction
     func beginPresentation(uri: String) async throws -> EudiPresentationRequest
@@ -81,7 +84,13 @@ protocol OpenID4VCOperating: Sendable {
     func resumeEligibleAutomaticRefreshes() async
 }
 
+extension OpenID4VCOperating {
+    func installBundledCredentialIfNeeded() async throws {}
+}
+
 actor LiveOpenID4VCService: OpenID4VCOperating {
+    private static let bundledConfigurationID = "oari-demo-credential"
+    private static let bundledCredentialInstalledKey = "oari.demo-credential.install-completed"
     private struct PersistedRefresh: Codable, Sendable {
         let backend: W3CCredentialRefreshContinuation
         let pending: PendingW3CCredentialRefresh?
@@ -125,6 +134,8 @@ actor LiveOpenID4VCService: OpenID4VCOperating {
         }
     }
     private let backend: OpenID4VCW3CBackend
+    private let credentialStore: any EbsiCredentialStore
+    private let holderIdentityProvider: any W3CHolderIdentityProviding
     private let metadata: any CredentialMetadataRepository
     private let audit: any AuditRepository
     private let deferredRepository: any DeferredIssuanceRepository
@@ -135,16 +146,106 @@ actor LiveOpenID4VCService: OpenID4VCOperating {
 
     init(
         backend: OpenID4VCW3CBackend,
+        credentialStore: any EbsiCredentialStore,
+        holderIdentityProvider: any W3CHolderIdentityProviding,
         metadata: any CredentialMetadataRepository,
         audit: any AuditRepository,
         deferredRepository: any DeferredIssuanceRepository,
         refreshRepository: any CredentialRefreshContinuationRepository
     ) {
         self.backend = backend
+        self.credentialStore = credentialStore
+        self.holderIdentityProvider = holderIdentityProvider
         self.metadata = metadata
         self.audit = audit
         self.deferredRepository = deferredRepository
         self.refreshRepository = refreshRepository
+    }
+
+    func installBundledCredentialIfNeeded() async throws {
+        guard !UserDefaults.standard.bool(forKey: Self.bundledCredentialInstalledKey) else { return }
+        let existing = try await metadata.credentials()
+        if existing.contains(where: { $0.configurationID == Self.bundledConfigurationID }) {
+            UserDefaults.standard.set(true, forKey: Self.bundledCredentialInstalledKey)
+            return
+        }
+
+        let holder = try await holderIdentityProvider.loadOrCreateIdentity()
+        let issuerKey = P256.Signing.PrivateKey()
+        let issuerDID = try KeyDIDResolver().derive(publicKeyX963: issuerKey.publicKey.x963Representation)
+        let now = Date()
+        let expiry = Calendar(identifier: .gregorian).date(byAdding: .year, value: 10, to: now)!
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        let header: [String: Any] = ["alg": "ES256", "typ": "JWT", "kid": issuerDID]
+        let vc: [String: Any] = [
+            "@context": ["https://www.w3.org/ns/credentials/v2"],
+            "type": ["VerifiableCredential", "DemoCredential"],
+            "issuer": issuerDID,
+            "validFrom": formatter.string(from: now),
+            "validUntil": formatter.string(from: expiry),
+            "credentialSubject": ["id": holder.did, "name": "Demo User", "demoAccess": "Granted"],
+        ]
+        func base64URL(_ data: Data) -> String {
+            data.base64EncodedString()
+                .replacingOccurrences(of: "+", with: "-")
+                .replacingOccurrences(of: "/", with: "_")
+                .replacingOccurrences(of: "=", with: "")
+        }
+        func encoded(_ object: Any) throws -> String {
+            base64URL(try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]))
+        }
+        let signingInput = try "\(encoded(header)).\(encoded(["vc": vc]))"
+        let signature = try issuerKey.signature(for: Data(signingInput.utf8)).rawRepresentation
+        let compactJWT = "\(signingInput).\(base64URL(signature))"
+        let stored = StoredEbsiCredential(
+            profileID: try EbsiCredentialProfile.vcdm2JWTVCJSON().id,
+            representation: .jwtVcJson,
+            rawCredential: Data(compactJWT.utf8),
+            holderKeyReference: holder.keyID.rawValue.uuidString,
+            receivedAt: now
+        )
+        try await credentialStore.save(stored)
+
+        let record = CredentialRecord(
+            configurationID: Self.bundledConfigurationID,
+            backendID: W3CBackendComposition.backendID,
+            backendDocumentID: stored.id.uuidString,
+            displayName: "Demo Credential",
+            format: .jwtVC,
+            profileID: stored.profileID,
+            issuerIdentifier: issuerDID,
+            subjectIdentifier: holder.did,
+            holderBinding: HolderBinding(method: .didKey, publicIdentifier: holder.did, keyID: holder.keyID),
+            cryptographicValidity: .valid,
+            issuerTrust: .trusted,
+            status: .notProvided,
+            legalClassification: .w3cCredential,
+            createdAt: now,
+            displayClaims: [
+                CredentialDisplayClaim(id: "name", label: "Name", value: "Demo User"),
+                CredentialDisplayClaim(id: "demoAccess", label: "Demo access", value: "Granted"),
+            ],
+            display: CredentialDisplayMetadata(
+                locale: "en", description: "Demonstration credential",
+                backgroundColor: "#2457C5", textColor: "#FFFFFF"
+            ),
+            validFrom: now,
+            validUntil: expiry
+        )
+        do {
+            try await metadata.saveMetadata(record)
+            try await audit.append(AuditEvent(
+                operation: .issuance, outcome: .completed, occurredAt: now,
+                counterpartyIdentifierDigest: .sha256(issuerDID), credentialIDs: [record.id],
+                policy: .development, policyVersion: AuditPolicyVersion(rawValue: 1)
+            ))
+            UserDefaults.standard.set(true, forKey: Self.bundledCredentialInstalledKey)
+        } catch {
+            try? await metadata.deleteMetadata(id: record.id)
+            try? await credentialStore.delete(id: stored.id)
+            throw error
+        }
     }
 
     func resolveInteraction(uri: String) async throws -> OpenID4VCResolvedInteraction {

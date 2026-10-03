@@ -189,6 +189,9 @@ struct WalletAppDependencies: Sendable {
         let transport = URLSessionOpenID4VCTransport()
         let resolver = CompositeDIDResolver(ebsi: EBSIDIDResolver(client: registryClient))
         let keyProvider = DeviceBoundKeyProvider(applicationTagPrefix: "io.oari.wallet.ebsi.key")
+        let holderIdentityProvider = PersistentW3CHolderIdentityProvider(
+            keyProvider: keyProvider, referenceStore: KeychainW3CHolderIdentityReferenceStore()
+        )
         let replayProtection = try EncryptedOpenID4VPReplayStore(
             directory: root.appendingPathComponent("presentation-replay", isDirectory: true),
             keyStore: keyStore
@@ -224,15 +227,15 @@ struct WalletAppDependencies: Sendable {
                 keyProvider: DeviceBoundKeyProvider(applicationTagPrefix: "io.oari.wallet.oid4vci.security")
             ),
             transportProfileRegistry: composition.transportProfileRegistry,
-            holderIdentityProvider: PersistentW3CHolderIdentityProvider(
-                keyProvider: keyProvider, referenceStore: KeychainW3CHolderIdentityReferenceStore()
-            ),
+            holderIdentityProvider: holderIdentityProvider,
             presentationRequestValidator: NativeOpenID4VPRequestObjectValidator(resolver: resolver),
             presentationReplayProtection: replayProtection,
             trustEnvironment: composition.environmentPolicy == .production ? .production : .development
         )
         return LiveOpenID4VCService(
             backend: backend,
+            credentialStore: openID4VCStore,
+            holderIdentityProvider: holderIdentityProvider,
             metadata: metadataRepository,
             audit: auditRepository,
             deferredRepository: deferredRepository,

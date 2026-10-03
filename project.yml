@@ -58,6 +58,8 @@ targets:
         product: EudiWalletKitAdapter
       - package: OariWalletModules
         product: EbsiW3CBackend
+      - package: OariWalletModules
+        product: IdentityDomain
     info:
       path: App/Resources/Info.plist
       properties:

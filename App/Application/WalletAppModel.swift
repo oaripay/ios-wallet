@@ -198,6 +198,7 @@ final class WalletAppModel: ObservableObject {
             appLockAuthenticator = dependencies.appLockAuthenticator
             appLockAuthenticationKind = dependencies.appLockAuthenticator.availability()
             repositories = (dependencies.credentials, dependencies.audit)
+            try await dependencies.openID4VCWallet?.installBundledCredentialIfNeeded()
             await dependencies.openID4VCWallet?.backfillCredentialValidity()
             if isEudiOperational, let eudiWallet {
                 let snapshot = try await eudiWallet.loadStartupSnapshot()
